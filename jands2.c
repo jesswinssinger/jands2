@@ -7,9 +7,10 @@
  gcc -Wall `pkg-config fuse --cflags --libs` jands2.c -o jands2
  TODO
   * Add global dir table for current directory. (and update fns)
-  * Support directories larger than block size
-  * Add "/" to begining of directory names for ls.
-  * Fix get free block.....
+  * Support directories larger than block size.
+  * Add "/" to beginning of directory names for ls.
+  * edit mkdir to adjust for availability
+  * add permissions for admin
 */
 
 #define FUSE_USE_VERSION 26
@@ -34,17 +35,20 @@
 #define ROOT_OFFSET 3
 #define DATA_OFFSET 4
 #define EOC 0
+#define MAX_FILENAME_LEN 32
+#define MAX_PATH_LEN 1000
 
 /* STRUCTS and UNIONS */
 typedef struct {
-   int fs_size;             //< size of filesystem (10MB)
-   int block_size;          //< size of blocks (4096B)
-   int fat_loc;             //< offset from 0 where fat is (in bytes)
-   int num_fat_entries;     //< number of entries in fat (2440 entries)
-   int root_loc;            //< offset from 0 where root directory table is (in bytes)
-   int data_loc;            //< offset from 0 where data is (in bytes) (1 block from root)
-   int free_list;	         //< first block in free_list
-   int data_blocks_used;    //< number of blocks currently in use
+   size_t fs_size;             //< size of filesystem (10MB)
+   size_t block_size;          //< size of blocks (4096B)
+   size_t fat_loc;             //< offset from 0 where fat is (in bytes)
+   size_t num_fat_entries;     //< number of entries in fat (2440 entries)
+   size_t root_loc;            //< offset from 0 where root directory table is (in bytes)
+   size_t data_loc;            //< offset from 0 where data is (in bytes) (1 block from root)
+   size_t free_list;	        //< first block in free_list
+   size_t data_blocks_used;    //< number of blocks currently in use
+   size_t unpriv_availability; //< number of blocks usable by unprivileged users
 }
 	jands_superblock;
 
@@ -55,25 +59,25 @@ typedef union {
 	padded_superblock;
 
 typedef union {
-	int f[FAT_ENTRY_COUNT];
+	size_t f[FAT_ENTRY_COUNT];
 	char pad[BLOCK_SIZE*2];
 }
 	padded_fat;
 
 typedef struct {
-   char name[32]; //< Name of file/dir (limited to 32 chars)
+   char name[MAX_FILENAME_LEN]; //< Name of file/dir (limited to 32 chars)
    char attr;     //< Attributes
-   int mode;      //< Permissions
-   int block_num; //< Block num (to find in FAT)
-   int size;      //< Size of file; if subdir, set to 0
+   size_t mode;      //< Permissions
+   size_t block_num; //< Block num (to find in FAT)
+   size_t size;      //< Size of file; if subdir, set to 0
    // int date_created;
    // int date_modified;
 } 
-	dir_table_entry;
+	dir_entry;
 
 typedef struct {
-   int num_entries;
-   dir_table_entry entries[(BLOCK_SIZE - 1)/sizeof(dir_table_entry)];
+   size_t num_entries;
+   dir_entry entries[(BLOCK_SIZE - 1)/sizeof(dir_entry)];
 }
 	dir_table;
 
@@ -83,39 +87,41 @@ typedef union {
 }
 	padded_dir_table;
 
+
 /* FUNCTION DECLARATIONS */
 static void print_dir_table(padded_dir_table *table);
-static void print_dir_entry(dir_table_entry *entry);
+static void print_dir_entry(dir_entry *entry);
 static int parse_path(const char *path, char *dir_path, char *filename);
 static int get_padded_dir_table(const char *path, padded_dir_table *table);
-static int get_table_entry(dir_table_entry *dir_entry, padded_dir_table *table, char* filename);
-static int new_dir_entry(dir_table_entry *dir_entry, const char* filename, 
-                           int attr,mode_t mode, int block_num, int size);
+static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename);
+static int new_dir_entry(dir_entry *entry, const char* filename, 
+                           int attr, mode_t mode, unsigned int block_num, size_t size);
 static int get_free_block(int* free_blk);
 static int update_superblock();
 static int update_fat();
-static int update_table(padded_dir_table* table, int block_num);
+static int update_table(padded_dir_table* table, unsigned int block_num);
 
 /* GLOBAL VARIABLES */
 int BACKING_STORE;
 jands_superblock superblock;
-int fat[FAT_ENTRY_COUNT];
-int max_dir_entries;
+unsigned int fat[FAT_ENTRY_COUNT];
+size_t max_dir_entries;
 
-static void print_dir_entry(dir_table_entry *entry)
+
+static void print_dir_entry(dir_entry *entry)
 {
 	printf("PRINTING DIR ENTRY\n");
 	printf("NAME: %s\n", entry->name);
 	printf("ATTR: %d\n", entry->attr);
-	printf("MODE: %d\n", entry->mode);
-	printf("BLOCK_NUM: %d\n", entry->block_num);
-	printf("SIZE: %d\n", entry->size);
+	printf("MODE: %zu\n", entry->mode);
+	printf("BLOCK_NUM: %zu\n", entry->block_num);
+	printf("SIZE: %zu\n", entry->size);
 }
 
 static void print_dir_table(padded_dir_table *table)
 {
 	printf("PRINTING DIR TABLE\n");
-	printf("NUM ENTRIES: %d\n", table->d.num_entries);
+	printf("NUM ENTRIES: %zu\n", table->d.num_entries);
 	int i;
 	for (i = 0; i < table->d.num_entries; i++) {
 		print_dir_entry(&(table->d.entries[i]));
@@ -188,8 +194,8 @@ static int get_padded_dir_table(const char *path, padded_dir_table *table)
 	printf("READ IN ROOT TABLE\n");
 	print_dir_table(table);
 
-	char dir_path[32];
-	char filename[32];
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];
 	res = parse_path(path, dir_path, filename);
 	if (res < 0)
 		return res;
@@ -199,12 +205,12 @@ static int get_padded_dir_table(const char *path, padded_dir_table *table)
 	if (strcmp(dir_path, "/") == 0)
 		return 0;
 
-	dir_table_entry next_entry;
+	dir_entry next_entry;
 	char* token = strtok(dir_path, "/");
 
 	while (token != NULL) {
 		printf("TOKEN IS NOT EMPTY: %s\n", token);
-		res = get_table_entry(&next_entry, table, token);
+		res = get_entry(&next_entry, table, token);
 		printf("DIR_PATH SO FAR: %s", dir_path);
 		print_dir_entry(&next_entry);
 
@@ -225,12 +231,12 @@ static int get_padded_dir_table(const char *path, padded_dir_table *table)
 }
 
 
-/* get_table_entry(dir_table_entry *dir_entry, padded_dir_table table, char* filename)
+/* get_entry(dir_entry *dir_entry, padded_dir_table table, char* filename)
 *
 * Buffers directory table entry requested (based on filename) into dir_entry
 * Returns 0 on success, errors if entry doesn't exist.
 */
-static int get_table_entry(dir_table_entry *dir_entry, padded_dir_table *table, char* filename)
+static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 {
 	printf("IN GET TABLE ENTRY\n");
 	printf("GETTING ENTRY FOR %s\n", filename);
@@ -241,9 +247,9 @@ static int get_table_entry(dir_table_entry *dir_entry, padded_dir_table *table, 
 	
 	for (i = 0; i < table->d.num_entries; i++) {
 		if (strcmp(table->d.entries[i].name, filename) == 0) {
-			*dir_entry = table->d.entries[i];
+			*entry = table->d.entries[i];
 			printf("FOUND ENTRY FOR %s\n", filename);
-			print_dir_entry(dir_entry);
+			print_dir_entry(entry);
 			return 0;
 		}
 	}
@@ -253,15 +259,15 @@ static int get_table_entry(dir_table_entry *dir_entry, padded_dir_table *table, 
 /* new_dir_entry(...)
 * Updates data members of dir_entry based on values passed in arguments
 */
-static int new_dir_entry(dir_table_entry *dir_entry, const char* filename, 
-                           int attr, mode_t mode, int block_num, int size)
+static int new_dir_entry(dir_entry *entry, const char* filename, 
+                           int attr, mode_t mode, unsigned int block_num, size_t size)
 {
 	printf("IN NEW_DIR_ENTRY\n\n");
-	strcpy(dir_entry->name, filename);
-	dir_entry->attr = attr;
-	dir_entry->mode = mode;
-	dir_entry->block_num = block_num;
-	dir_entry->size = size;
+	strcpy(entry->name, filename);
+	entry->attr = attr;
+	entry->mode = mode;
+	entry->block_num = block_num;
+	entry->size = size;
 
 	return 0;
 }
@@ -274,11 +280,9 @@ static int new_dir_entry(dir_table_entry *dir_entry, const char* filename,
 */
 static int get_free_block(int* free_blk)
 {
-	printf("IN GET_FREE_BLOCK\n\n");
-	printf("FREE LIST: %d", superblock.free_list);
-	printf("FREE LIST VAL: %d", fat[superblock.free_list]);
-	if (fat[superblock.free_list] == EOC) {
-		printf("NO FREE LIST LEFT\n");
+	printf("CHECKING FOR FREE BLOCK.... get_free_block()\n");
+	if (fat[superblock.free_list] == EOC || 
+	    (superblock.data_blocks_used > superblock.unpriv_availability)) {
 		return -ENOSPC;
 	}
 	
@@ -298,7 +302,6 @@ static int get_free_block(int* free_blk)
 	}
 
 	*free_blk = superblock.free_list;
-	printf("FINISHED GET_FREE_BLOCK SUCCESSFULLY\n");
 	return 0;
 }
 
@@ -312,8 +315,8 @@ static int update_superblock()
 	int write_check;
 
 	printf("updating....\n");
-	printf("freelist = %d", superblock.free_list);
-	printf("used blocks = %d", superblock.data_blocks_used);
+	printf("freelist = %zu", superblock.free_list);
+	printf("used blocks = %zu", superblock.data_blocks_used);
 	padded_superblock ps;
 	ps.s = superblock;
 
@@ -340,7 +343,7 @@ static int update_fat()
 	return 0;
 }
 
-static int update_table(padded_dir_table* table, int block_num)
+static int update_table(padded_dir_table* table, unsigned int block_num)
 {
 	printf("UPDATING TABLE");
 	lseek(BACKING_STORE, block_num * BLOCK_SIZE, SEEK_SET);
@@ -363,16 +366,16 @@ static int jands_access(const char *path, int mask)
 	if (padded_dir_table_check < 0)
 		return padded_dir_table_check;
 
-	char dir_path[32];
-	char filename[32];
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];
 	
 	int parse_path_check = parse_path(path, dir_path, filename);
 	if (parse_path_check < 0)
 		return parse_path_check;
 	
-	dir_table_entry dir_entry;
+	dir_entry entry;
 	printf("ABOUT TO GET DIR ENTRY\n");
-	return get_table_entry(&dir_entry, &table, filename);
+	return get_entry(&entry, &table, filename);
 }
 
 static int jands_getattr(const char *path, struct stat *stbuf)
@@ -385,21 +388,21 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	if (get_dir_check < 0)
 		return get_dir_check;
 
-	char dir_path[32];
-	char filename[32];
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];
 	int parse_path_check = parse_path(path, dir_path, filename);
 	
 	if (parse_path_check < 0)
 		return parse_path_check;
 
-	dir_table_entry dir_entry;
-	int get_entry_check = get_table_entry(&dir_entry, &table, filename);
+	dir_entry entry;
+	int get_entry_check = get_entry(&entry, &table, filename);
 
 	if (get_entry_check < 0)
 		return get_entry_check;
 		
-	stbuf->st_mode = S_IFDIR | dir_entry.mode;
-	stbuf->st_size = dir_entry.size;
+	stbuf->st_mode = S_IFDIR | entry.mode;
+	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
 	if (strcmp(path, "/") == 0)
 		stbuf->st_nlink = 2;
@@ -422,16 +425,16 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (res < 0)
 		return res;
 
-	char dir_path[32];
-	char filename[32];	
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];	
 	parse_path(path, dir_path, filename);
 
-	dir_table_entry dir_entry;
-	res = get_table_entry(&dir_entry, &table, filename);
+	dir_entry entry;
+	res = get_entry(&entry, &table, filename);
 	if (res < 0)
 		return res;
 
-	res = lseek(BACKING_STORE, dir_entry.block_num*BLOCK_SIZE, SEEK_SET);
+	res = lseek(BACKING_STORE, entry.block_num*BLOCK_SIZE, SEEK_SET);
 	if (res < 0)
 		return res;
 	res = read(BACKING_STORE, &table, BLOCK_SIZE);
@@ -468,16 +471,16 @@ static int jands_mkdir(const char *path, mode_t mode)
 		return res;
 
 	/* Get new directory name. */
-	char dir_path[32];
-	char filename[32];
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];
 	parse_path(path, dir_path, filename);
 
 	/* Add entry to parent's directory table. */
-	dir_table_entry dir_entry;
-	new_dir_entry(&dir_entry, filename, 0x10, mode, free_blk, 0);
+	dir_entry entry;
+	new_dir_entry(&entry, filename, 0x10, mode, free_blk, 0);
 	printf("NEW ENTRY IN ROOT TABLE:::::\n");
-	print_dir_entry(&dir_entry);
-	parent_table.d.entries[parent_table.d.num_entries] = dir_entry;
+	print_dir_entry(&entry);
+	parent_table.d.entries[parent_table.d.num_entries] = entry;
 	parent_table.d.num_entries += 1;
 	res = update_table(&parent_table, parent_table.d.entries[0].block_num);
 	print_dir_table(&parent_table);
@@ -485,10 +488,10 @@ static int jands_mkdir(const char *path, mode_t mode)
 		return res;
 
 	/* Make new directory table. */
-	strcpy(dir_entry.name, ".");
-	dir_entry.attr = dir_entry.attr & 0x02;
+	strcpy(entry.name, ".");
+	entry.attr = entry.attr & 0x02;
 
-	dir_table_entry parent_entry = parent_table.d.entries[0];
+	dir_entry parent_entry = parent_table.d.entries[0];
 	res = new_dir_entry(&parent_entry, "..", (parent_entry.attr & 0x02), 
 					parent_entry.mode, parent_entry.block_num, parent_entry.size);
 	if (res < 0)
@@ -496,22 +499,91 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 	padded_dir_table new_table;
 		new_table.d.num_entries = 2;
-		new_table.d.entries[0] = dir_entry;
+		new_table.d.entries[0] = entry;
 		new_table.d.entries[1] = parent_entry;
 
 	printf("NEW TABLE CREATED\n");
 	print_dir_table(&new_table);
 
-	res = update_table(&new_table, dir_entry.block_num);
+	res = update_table(&new_table, entry.block_num);
 	return res;
 }
+
+//static int jands_release(const char* path, struct fuse_file_info *fi)
+//static int jands_create(const char* path, mode_t mode)
+//static int jands_fgetattr(const char* path, struct stat* stbuf)
+static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
+{
+	if (!S_ISREG(mode))
+		return -EACCES;
+
+	int res = 0;
+
+	char filename[MAX_FILENAME_LEN];
+	char dir_path[MAX_PATH_LEN];
+
+	res = parse_path(path, dir_path, filename);
+	if (res < 0)
+		return res;
+
+	padded_dir_table table;
+	res = get_padded_dir_table(path, &table);
+
+	dir_entry node;
+	int check_no_exist = get_entry(&node, &table, filename);
+
+	if (check_no_exist > -1)
+		return -EEXIST;
+
+
+	int free_block = 0;
+	res = get_free_block(&free_block);
+	if (res < 0)
+		return res;
+
+	dir_entry new_entry;
+	res = new_dir_entry(&new_entry, filename, 0, mode, free_block, 0);
+
+	return res;
+}
+
+// static int jands_open(const char* path, struct fuse_file_info* fi)
+
+
+
+
+//static int jands_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+//static int jands_readlink(const char* path, char* buf, size_t size)
+//static int jands_rmdir(const char* path)
+
+static int jands_statfs(const char* path, struct statvfs* stbuf)
+{
+	printf("IN STATFS\n");
+	int res = update_superblock();
+	if (res < 0)
+		return res;
+	
+	stbuf->f_bsize = superblock.block_size;
+	stbuf->f_blocks = superblock.num_fat_entries;
+	stbuf->f_bfree = superblock.num_fat_entries - superblock.data_blocks_used;
+	stbuf->f_bavail = superblock.unpriv_availability - superblock.data_blocks_used;
+	stbuf->f_namemax = 32;
+
+	return 0;
+}
+
+//symlink(const char* to, const char* from)
+//truncate(const char* path, off_t size)
+//unlink(const char* path)
+//write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+
 
 static void* jands_init(struct fuse_conn_info *conn)
 {
    printf("IN INIT\n\n");
 	int no_file = access("BACKING_STORE", F_OK);
 	BACKING_STORE = open("BACKING_STORE", O_RDWR | O_CREAT, 0777);
-	max_dir_entries = (BLOCK_SIZE-1)/sizeof(dir_table_entry);
+	max_dir_entries = (BLOCK_SIZE-1)/sizeof(dir_entry);
 	
 	if (no_file) {
 		int i;
@@ -525,6 +597,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		superblock.data_loc         = DATA_OFFSET*BLOCK_SIZE;
 		superblock.data_blocks_used = 1;
 		superblock.free_list        = 4;
+		superblock.unpriv_availability = (int) FAT_ENTRY_COUNT * 0.8;
 
 		/* Add padding to superblock to ensure it occupies a full block */
 		padded_superblock padded_sb;
@@ -533,7 +606,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		write(BACKING_STORE, &padded_sb, BLOCK_SIZE);
 
 		/* Initialize fat. */
-		for (i = 0; i < 3; i++) 
+		for (i = 0; i < 3; i++)
 			fat[i] = EOC;
 
 		for (i = 3; i < superblock.num_fat_entries; i++)
@@ -544,7 +617,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		update_fat();
 
 		/* Create root directory table */
-		dir_table_entry root;
+		dir_entry root;
 			strcpy(root.name, ".");
 			//0x10 = a directory
 			//0x04 = belongs to the system (i.e. root cannot be moved)
@@ -554,7 +627,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 			root.block_num = ROOT_OFFSET;
 			root.size = 0;
 		
-		dir_table_entry parent;
+		dir_entry parent;
 			strcpy(parent.name, "..");
 			//0x10 = a directory
 			//0x04 = belongs to the system (i.e. parent of root cannot be moved)
@@ -593,6 +666,9 @@ static struct fuse_operations jands_oper = {
 	.access		= jands_access,
 	.readdir	= jands_readdir,
 	.mkdir		= jands_mkdir,
+	// .open		= jands_open,
+	.mknod      = jands_mknod,
+	.statfs     = jands_statfs,
 	.init       = jands_init,
 };
 
