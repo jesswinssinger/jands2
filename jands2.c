@@ -393,25 +393,12 @@ static int jands_access(const char *path, int mask)
 static int jands_getattr(const char *path, struct stat *stbuf)
 {
 	printf("IN GETATTR\n\n");
-
-	padded_dir_table table;
-	printf("getting dir table for %s\n", path);
-	int get_dir_check = get_padded_dir_table(path, &table);
-	if (get_dir_check < 0)
-		return get_dir_check;
-
-	char dir_path[MAX_PATH_LEN];
-	char filename[MAX_FILENAME_LEN];
-	int parse_path_check = parse_path(path, dir_path, filename);
-
-	if (parse_path_check < 0)
-		return parse_path_check;
+	int res;
 
 	dir_entry entry;
-	int get_entry_check = get_entry(&entry, &table, filename);
-
-	if (get_entry_check < 0)
-		return get_entry_check;
+	res = get_entry_with_path(&entry, path);
+	if (res < 0)
+		return res;
 
 	stbuf->st_mode = S_IFDIR | entry.mode;
 	stbuf->st_size = entry.size;
@@ -430,19 +417,10 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	printf("IN READDIR\n\n");
 	(void) fi;
 
-	int res = 0;
-
-	padded_dir_table table;
-	res = get_padded_dir_table(path, &table);
-	if (res < 0)
-		return res;
-
-	char dir_path[MAX_PATH_LEN];
-	char filename[MAX_FILENAME_LEN];
-	parse_path(path, dir_path, filename);
+	int res;
 
 	dir_entry entry;
-	res = get_entry(&entry, &table, filename);
+	res = get_entry_with_path(&entry, path);
 	if (res < 0)
 		return res;
 
@@ -562,13 +540,8 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 // static int jands_open(const char* path, struct fuse_file_info* fi)
 // {
 // 	(void) fi; //TODO: do we want to set anything with this?
-//
-// 	char filename[MAX_FILENAME_LEN];
-// 	char dir_path[MAX_PATH_LEN];
-// 	parse_path(path, dir_path, filename);
-//
-// 	dir_entry entry;
-// 	get_entry(&entry, dir_table, filename);
+//  dir_entry entry;
+//  get_entry_with_path(&entry, path);
 // 	getattr()
 // 	//check existance
 // 	//check Permissions
