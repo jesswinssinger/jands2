@@ -1,6 +1,6 @@
 /*
  JANDS2: Jess and Santi 2.0
-	* FAT file system
+  * FAT file system
  FUSE: Filesystem in Userspace
  Copyright (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
 
@@ -40,52 +40,52 @@
 
 /* STRUCTS and UNIONS */
 typedef struct {
-   size_t fs_size;             //< size of filesystem (10MB)
-   size_t block_size;          //< size of blocks (4096B)
-   size_t fat_loc;             //< offset from 0 where fat is (in bytes)
-   size_t num_fat_entries;     //< number of entries in fat (2440 entries)
-   size_t root_loc;            //< offset from 0 where root directory table is (in bytes)
-   size_t data_loc;            //< offset from 0 where data is (in bytes) (1 block from root)
-   size_t free_list;	         //< first block in free_list
-   size_t data_blocks_used;    //< number of blocks currently in use
-   size_t unpriv_availability; //< number of blocks usable by unprivileged users
+	size_t fs_size;             //< size of filesystem (10MB)
+	size_t block_size;          //< size of blocks (4096B)
+	size_t fat_loc;             //< offset from 0 where fat is (in bytes)
+	size_t num_fat_entries;     //< number of entries in fat (2440 entries)
+	size_t root_loc;            //< offset from 0 where root directory table is (in bytes)
+	size_t data_loc;            //< offset from 0 where data is (in bytes) (1 block from root)
+	size_t free_list;           //< first block in free_list
+	size_t data_blocks_used;    //< number of blocks currently in use
+	size_t unpriv_availability; //< number of blocks usable by unprivileged users
 }
-	jands_superblock;
+  jands_superblock;
 
 typedef union {
-   jands_superblock s;
-   char pad[BLOCK_SIZE];
+	jands_superblock s;
+	char pad[BLOCK_SIZE];
 }
-	padded_superblock;
+  padded_superblock;
 
 typedef union {
 	size_t f[FAT_ENTRY_COUNT];
 	char pad[BLOCK_SIZE*2];
 }
-	padded_fat;
+  padded_fat;
 
 typedef struct {
-   char name[MAX_FILENAME_LEN]; //< Name of file/dir (limited to 32 chars)
-   char attr;     //< Attributes
-   size_t mode;      //< Permissions
-   size_t block_num; //< Block num (to find in FAT)
-   size_t size;      //< Size of file; if subdir, set to 0
-   // int date_created;
-   // int date_modified;
+	char name[MAX_FILENAME_LEN]; //< Name of file/dir (limited to 32 chars)
+	char attr;     //< Attributes
+	size_t mode;      //< Permissions
+	size_t block_num; //< Block num (to find in FAT)
+	size_t size;      //< Size of file; if subdir, set to 0
+	// int date_created;
+	// int date_modified;
 }
-	dir_entry;
+  dir_entry;
 
 typedef struct {
-   size_t num_entries;
-   dir_entry entries[(BLOCK_SIZE - 1)/sizeof(dir_entry)];
+	size_t num_entries;
+	dir_entry entries[(BLOCK_SIZE - 1)/sizeof(dir_entry)];
 }
-	dir_table;
+  dir_table;
 
 typedef union {
-	dir_table d;
-	char pad[BLOCK_SIZE];
+  dir_table d;
+  char pad[BLOCK_SIZE];
 }
-	padded_dir_table;
+  padded_dir_table;
 
 
 /* FUNCTION DECLARATIONS */
@@ -95,7 +95,7 @@ static int parse_path(const char *path, char *dir_path, char *filename);
 static int get_padded_dir_table(const char *path, padded_dir_table *table);
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename);
 static int create_dir_entry(dir_entry *entry, const char* filename,
-                           int attr, mode_t mode, unsigned int block_num, size_t size);
+				    int attr, mode_t mode, unsigned int block_num, size_t size);
 static int get_free_block(int* free_blk);
 static int update_superblock();
 static int update_fat();
@@ -261,7 +261,7 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 * Updates data members of dir_entry based on values passed in arguments
 */
 static int create_dir_entry(dir_entry *entry, const char* filename,
-                           int attr, mode_t mode, unsigned int block_num, size_t size)
+					int attr, mode_t mode, unsigned int block_num, size_t size)
 {
 	printf("IN create_dir_entry\n\n");
 	strcpy(entry->name, filename);
@@ -283,7 +283,7 @@ static int get_free_block(int* free_blk)
 {
 	printf("CHECKING FOR FREE BLOCK.... get_free_block()\n");
 	if (fat[superblock.free_list] == EOC ||
-	    (superblock.data_blocks_used > superblock.unpriv_availability)) {
+	(superblock.data_blocks_used > superblock.unpriv_availability)) {
 		return -ENOSPC;
 	}
 
@@ -414,7 +414,7 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 }
 
 static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		       off_t offset, struct fuse_file_info *fi)
+		   off_t offset, struct fuse_file_info *fi)
 {
 	printf("IN READDIR\n\n");
 	(void) fi;
@@ -494,14 +494,14 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 	dir_entry parent_entry = parent_table.d.entries[0];
 	res = create_dir_entry(&parent_entry, "..", (parent_entry.attr & 0x02),
-					parent_entry.mode, parent_entry.block_num, parent_entry.size);
+		  parent_entry.mode, parent_entry.block_num, parent_entry.size);
 	if (res < 0)
 		return res;
 
 	padded_dir_table new_table;
-		new_table.d.num_entries = 2;
-		new_table.d.entries[0] = entry;
-		new_table.d.entries[1] = parent_entry;
+	new_table.d.num_entries = 2;
+	new_table.d.entries[0] = entry;
+	new_table.d.entries[1] = parent_entry;
 
 	printf("NEW TABLE CREATED\n");
 	print_dir_table(&new_table);
@@ -577,9 +577,9 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 
 static void* jands_init(struct fuse_conn_info *conn)
 {
-  printf("IN INIT\n\n");
-  max_dir_entries = (BLOCK_SIZE - 1)/sizeof(dir_entry);
-  int no_file = access("BACKING_STORE", F_OK);
+	printf("IN INIT\n\n");
+	max_dir_entries = (BLOCK_SIZE - 1)/sizeof(dir_entry);
+	int no_file = access("BACKING_STORE", F_OK);
 	BACKING_STORE = open("BACKING_STORE", O_RDWR | O_CREAT, 0777);
 
 	if (no_file) {
@@ -599,51 +599,51 @@ static void* jands_init(struct fuse_conn_info *conn)
 		padded_sb.s = superblock;
 		write(BACKING_STORE, &padded_sb, BLOCK_SIZE);
 
-    /* Initialize fat. */
-    int i;
+		/* Initialize fat. */
+		int i;
 		for (i = 0; i < 3; i++) {
-			fat[i] = EOC;
-    }
+		  fat[i] = EOC;
+		}
 		for (i = 3; i < superblock.num_fat_entries; i++) {
-			fat[i] = i+1;
-    }
+		  fat[i] = i+1;
+		}
 
 		fat[superblock.num_fat_entries - 1] = EOC;
 		update_fat();
 
 		/* Create root directory table */
 
-    // Entry for root: .
-    dir_entry root;
-			strcpy(root.name, ".");
-			root.attr = 0x10 & 0x04 & 0x02;
-			root.mode = 0777;
-			root.block_num = ROOT_OFFSET;
-			root.size = 0;
+		// Entry for root: .
+		dir_entry root;
+		  strcpy(root.name, ".");
+		  root.attr = 0x10 & 0x04 & 0x02;
+		  root.mode = 0777;
+		  root.block_num = ROOT_OFFSET;
+		  root.size = 0;
 
-    // Entry for root's parent dir: ..
+		// Entry for root's parent dir: ..
 		dir_entry parent;
-			strcpy(parent.name, "..");
-			parent.attr = 0x10 & 0x04 & 0x02;
-			parent.mode = 0777;
-			parent.block_num = -1;
-			parent.size = 0;
+		  strcpy(parent.name, "..");
+		  parent.attr = 0x10 & 0x04 & 0x02;
+		  parent.mode = 0777;
+		  parent.block_num = -1;
+		  parent.size = 0;
 
-    // Table
+		// Table
 		dir_table root_table;
-			root_table.num_entries = 2;
-			root_table.entries[0] = root;
-			root_table.entries[1] = parent;
+		  root_table.num_entries = 2;
+		  root_table.entries[0] = root;
+		  root_table.entries[1] = parent;
 
-    // Add padding
+		// Add padding
 		padded_dir_table padded_root;
-			padded_root.d = root_table;
+		  padded_root.d = root_table;
 
 		lseek(BACKING_STORE, superblock.root_loc, SEEK_SET);
 		write(BACKING_STORE, &padded_root, BLOCK_SIZE);
 	}
 
-  else { // File already exists; read in superblock.
+	else { // File already exists; read in superblock.
 		padded_superblock ps;
 		int read_check = read(BACKING_STORE, &ps, BLOCK_SIZE);
 		if (read_check < 0)
@@ -651,32 +651,32 @@ static void* jands_init(struct fuse_conn_info *conn)
 
 		superblock = ps.s;
 	}
-   return fuse_get_context()->private_data;
+	return fuse_get_context()->private_data;
 }
 
 static struct fuse_operations jands_oper = {
-	.getattr	= jands_getattr,
-	.access		= jands_access,
-	.readdir	= jands_readdir,
-	.mkdir		= jands_mkdir,
-  //.release = jands_release,
-  //.create = jands_create,
-  //.fgetattr = jands_fgetattr,
+	.getattr  = jands_getattr,
+	.access    = jands_access,
+	.readdir  = jands_readdir,
+	.mkdir    = jands_mkdir,
+	//.release = jands_release,
+	//.create = jands_create,
+	//.fgetattr = jands_fgetattr,
 	.mknod      = jands_mknod,
-  //.open = jands_open,
-  //.read = jands_read,
-  //.readlink = jands_readlink,
-  //.rmdir = jands_rmdir,
+	//.open = jands_open,
+	//.read = jands_read,
+	//.readlink = jands_readlink,
+	//.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
-  //.symlink  = jands_symlink,
-  //.truncate = jands_truncate,
-  //.unlink   = jands_unlink,
-  //.write    = jands_write,
+	//.symlink  = jands_symlink,
+	//.truncate = jands_truncate,
+	//.unlink   = jands_unlink,
+	//.write    = jands_write,
 	.init       = jands_init,
 };
 
 int main(int argc, char *argv[])
 {
-   umask(0);
+	umask(0);
 	return fuse_main(argc, argv, &jands_oper, NULL);
 }
