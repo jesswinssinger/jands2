@@ -94,6 +94,7 @@ static void print_dir_entry(dir_entry *entry);
 static int parse_path(const char *path, char *dir_path, char *filename);
 static int get_padded_dir_table(const char *path, padded_dir_table *table);
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename);
+static int get_entry_with_path(dir_entry *entry, const char* path);
 static int create_dir_entry(dir_entry *entry, const char* filename,
 				    int attr, mode_t mode, unsigned int block_num, size_t size);
 static int get_free_block(int* free_blk);
@@ -257,6 +258,31 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 	return -ENOENT;
 }
 
+/** get_entry_with_path(dir_entry *entry, const char* path)
+ *
+ * Buffers dir entry for the given path into "entry" argument.
+ * \returns 0 on success, -ENOENT if entry could not be found.
+ */
+static int get_entry_with_path(dir_entry *entry, const char* path)
+{
+	printf("IN GET_ENTRY_WITH_PATH\n");
+	int res;
+
+	padded_dir_table table;
+	res = get_padded_dir_table(path, &table);
+
+	if (res < 0)
+		return res;
+
+	char dir_path[MAX_PATH_LEN];
+	char filename[MAX_FILENAME_LEN];
+	res = parse_path(path, dir_path, filename);
+	if (res < 0)
+		return res;
+
+	return get_entry(entry, &table, filename);
+}
+
 /* create_dir_entry(...)
  * Updates data members of dir_entry based on values passed in arguments
  */
@@ -360,23 +386,8 @@ static int jands_access(const char *path, int mask)
 {
 	printf("IN ACCESS\n\n");
 
-	padded_dir_table table;
-	int padded_dir_table_check = get_padded_dir_table(path, &table);
-
-	printf("BACK FROM GET DIR TABLE\n");
-	if (padded_dir_table_check < 0)
-		return padded_dir_table_check;
-
-	char dir_path[MAX_PATH_LEN];
-	char filename[MAX_FILENAME_LEN];
-
-	int parse_path_check = parse_path(path, dir_path, filename);
-	if (parse_path_check < 0)
-		return parse_path_check;
-
 	dir_entry entry;
-	printf("ABOUT TO GET DIR ENTRY\n");
-	return get_entry(&entry, &table, filename);
+	return get_entry_with_path(&entry, path);
 }
 
 static int jands_getattr(const char *path, struct stat *stbuf)
@@ -549,6 +560,20 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 }
 
 // static int jands_open(const char* path, struct fuse_file_info* fi)
+// {
+// 	(void) fi; //TODO: do we want to set anything with this?
+//
+// 	char filename[MAX_FILENAME_LEN];
+// 	char dir_path[MAX_PATH_LEN];
+// 	parse_path(path, dir_path, filename);
+//
+// 	dir_entry entry;
+// 	get_entry(&entry, dir_table, filename);
+// 	getattr()
+// 	//check existance
+// 	//check Permissions
+// 	//
+// }
 //static int jands_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
 //static int jands_readlink(const char* path, char* buf, size_t size)
 //static int jands_rmdir(const char* path)
@@ -572,7 +597,8 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 //static int jands_symlink(const char* to, const char* from)
 //static int jands_truncate(const char* path, off_t size)
 //static int jands_unlink(const char* path)
-//static int jands_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+//static int jands_write(const char* path, const char *buf, size_t size,
+//                      off_t offset, struct fuse_file_info* fi)
 
 
 static void* jands_init(struct fuse_conn_info *conn)
