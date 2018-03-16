@@ -42,13 +42,13 @@
 typedef struct {
 	size_t fs_size;             //< size of filesystem (10MB)
 	size_t block_size;          //< size of blocks (4096B)
-	size_t fat_loc;             //< offset from 0 where fat is (in bytes)
-	size_t num_fat_entries;     //< number of entries in fat (2440 entries)
-	size_t root_loc;            //< offset from 0 where root directory table is (in bytes)
-	size_t data_loc;            //< offset from 0 where data is (in bytes) (1 block from root)
-	size_t free_list;           //< first block in free_list
-	size_t data_blocks_used;    //< number of blocks currently in use
-	size_t unpriv_availability; //< number of blocks usable by unprivileged users
+	size_t fat_loc;             //< offset of fat
+	size_t num_fat_entries;     //< # of entries in fat (2440 entries)
+	size_t root_loc;            //< offset of root dir table
+	size_t data_loc;            //< offset of data
+	size_t free_list;           //< first block in free list
+	size_t data_blocks_used;    //< # of blocks currently in use
+	size_t unpriv_availability; //< # of blocks usable by unprivileged users
 }
   jands_superblock;
 
