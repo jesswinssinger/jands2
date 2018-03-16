@@ -171,9 +171,9 @@ static int parse_path(const char *path, char *dir_path, char *filename)
 }
 
 /** get_padded_dir_table()
-*  Buffers padded_dir_table into table based on path
-*  Returns -1 if directory does not exist
-*/
+ *  Buffers padded_dir_table into table based on path
+ *  Returns -1 if directory does not exist
+ */
 static int get_padded_dir_table(const char *path, padded_dir_table *table)
 {
 	printf("IN GET_padded_dir_table\n\n");
@@ -233,10 +233,10 @@ static int get_padded_dir_table(const char *path, padded_dir_table *table)
 
 
 /* get_entry(dir_entry *dir_entry, padded_dir_table table, char* filename)
-*
-* Buffers directory table entry requested (based on filename) into dir_entry
-* Returns 0 on success, errors if entry doesn't exist.
-*/
+ *
+ * Buffers directory table entry requested (based on filename) into dir_entry
+ * Returns 0 on success, errors if entry doesn't exist.
+ */
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 {
 	printf("IN GET TABLE ENTRY\n");
@@ -258,8 +258,8 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 }
 
 /* create_dir_entry(...)
-* Updates data members of dir_entry based on values passed in arguments
-*/
+ * Updates data members of dir_entry based on values passed in arguments
+ */
 static int create_dir_entry(dir_entry *entry, const char* filename,
 					int attr, mode_t mode, unsigned int block_num, size_t size)
 {
@@ -274,11 +274,11 @@ static int create_dir_entry(dir_entry *entry, const char* filename,
 }
 
 /** get_free_block(int* free_blk)
-*
-* Saves next free block to passed arg.
-* Marks next available free block as full in FAT.
-* \returns 0 on success.
-*/
+ *
+ * Saves next free block to passed arg.
+ * Marks next available free block as full in FAT.
+ * \returns 0 on success.
+ */
 static int get_free_block(int* free_blk)
 {
 	printf("CHECKING FOR FREE BLOCK.... get_free_block()\n");
@@ -307,9 +307,9 @@ static int get_free_block(int* free_blk)
 }
 
 /** update_superblock()
-*
-* Writes superblock to BACKING_STORE.
-*/
+ *
+ * Writes superblock to BACKING_STORE.
+ */
 static int update_superblock()
 {
 	printf("IN UPDATE_superblock\n\n");
