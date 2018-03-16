@@ -569,10 +569,10 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 	return 0;
 }
 
-//symlink(const char* to, const char* from)
-//truncate(const char* path, off_t size)
-//unlink(const char* path)
-//write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+//static int jands_symlink(const char* to, const char* from)
+//static int jands_truncate(const char* path, off_t size)
+//static int jands_unlink(const char* path)
+//static int jands_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
 
 
 static void* jands_init(struct fuse_conn_info *conn)
@@ -659,9 +659,19 @@ static struct fuse_operations jands_oper = {
 	.access		= jands_access,
 	.readdir	= jands_readdir,
 	.mkdir		= jands_mkdir,
-	// .open		= jands_open,
+  //.release = jands_release,
+  //.create = jands_create,
+  //.fgetattr = jands_fgetattr,
 	.mknod      = jands_mknod,
+  //.open = jands_open,
+  //.read = jands_read,
+  //.readlink = jands_readlink,
+  //.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
+  //.symlink  = jands_symlink,
+  //.truncate = jands_truncate,
+  //.unlink   = jands_unlink,
+  //.write    = jands_write,
 	.init       = jands_init,
 };
 
