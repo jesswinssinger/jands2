@@ -94,7 +94,7 @@ static void print_dir_entry(dir_entry *entry);
 static int parse_path(const char *path, char *dir_path, char *filename);
 static int get_padded_dir_table(const char *path, padded_dir_table *table);
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename);
-static int get_entry_with_path(dir_entry *entry, const char* path);
+static int get_entry_and_table(dir_entry *entry, padded_dir_table *table, const char* path);
 static int create_dir_entry(dir_entry *entry, const char* filename,
 				    int attr, mode_t mode, unsigned int block_num, size_t size);
 static int get_free_block(int* free_blk);
@@ -258,18 +258,19 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 	return -ENOENT;
 }
 
-/** get_entry_with_path(dir_entry *entry, const char* path)
+/** get_entry_and_table(dir_entry *entry, padded_dir_table *table,
+ * 						const char* path)
  *
- * Buffers dir entry for the given path into "entry" argument.
+ * Buffers dir entry and table for the given path.
  * \returns 0 on success, -ENOENT if entry could not be found.
  */
-static int get_entry_with_path(dir_entry *entry, const char* path)
+static int get_entry_and_table(dir_entry *entry, padded_dir_table *table,
+	const char* path)
 {
-	printf("IN GET_ENTRY_WITH_PATH\n");
+	printf("IN GET_ENTRY_AND_TABLE\n");
 	int res;
 
-	padded_dir_table table;
-	res = get_padded_dir_table(path, &table);
+	res = get_padded_dir_table(path, table);
 
 	if (res < 0)
 		return res;
@@ -280,7 +281,7 @@ static int get_entry_with_path(dir_entry *entry, const char* path)
 	if (res < 0)
 		return res;
 
-	return get_entry(entry, &table, filename);
+	return get_entry(entry, table, filename);
 }
 
 /* create_dir_entry(...)
@@ -387,7 +388,9 @@ static int jands_access(const char *path, int mask)
 	printf("IN ACCESS\n\n");
 
 	dir_entry entry;
-	return get_entry_with_path(&entry, path);
+	padded_dir_table table;
+
+	return get_entry_and_table(&entry, &table, path);
 }
 
 static int jands_getattr(const char *path, struct stat *stbuf)
@@ -396,7 +399,8 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	int res;
 
 	dir_entry entry;
-	res = get_entry_with_path(&entry, path);
+	padded_dir_table table;
+	res = get_entry_and_table(&entry, &table, path);
 	if (res < 0)
 		return res;
 
@@ -420,7 +424,9 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	int res;
 
 	dir_entry entry;
-	res = get_entry_with_path(&entry, path);
+	padded_dir_table table;
+
+	res = get_entry_and_table(&entry, &table, path);
 	if (res < 0)
 		return res;
 
@@ -504,35 +510,42 @@ static int jands_mkdir(const char *path, mode_t mode)
 //static int jands_fgetattr(const char* path, struct stat* stbuf)
 static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 {
+	/* Return error if mode is not for regular file */
 	if (!S_ISREG(mode))
 		return -EACCES;
 
 	int res = 0;
 
+	/* Parse path. */
 	char filename[MAX_FILENAME_LEN];
 	char dir_path[MAX_PATH_LEN];
-
 	res = parse_path(path, dir_path, filename);
 	if (res < 0)
 		return res;
 
+	/* Get parent directory. */
 	padded_dir_table table;
 	res = get_padded_dir_table(path, &table);
 
+	/* Check that a file with same name does not exist. */
 	dir_entry node;
 	int check_no_exist = get_entry(&node, &table, filename);
-
-	if (check_no_exist > -1)
+	if (!check_no_exist)
 		return -EEXIST;
 
-
+	/* Allocate free block for new file. */
 	int free_block = 0;
 	res = get_free_block(&free_block);
 	if (res < 0)
 		return res;
 
+	/* Create new entry for directory table */
 	dir_entry new_entry;
 	res = create_dir_entry(&new_entry, filename, 0, mode, free_block, 0);
+
+	/* Add to parent directory table */
+	table.d.entries[table.d.num_entries] = new_entry;
+	table.d.num_entries++;
 
 	return res;
 }
@@ -541,7 +554,8 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 // {
 // 	(void) fi; //TODO: do we want to set anything with this?
 //  dir_entry entry;
-//  get_entry_with_path(&entry, path);
+//  padded_dir_table table;
+//  get_entry_and_table(&entry, &table, path);
 // 	getattr()
 // 	//check existance
 // 	//check Permissions
