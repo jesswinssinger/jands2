@@ -82,8 +82,8 @@ typedef struct {
   dir_table;
 
 typedef union {
-  dir_table d;
-  char pad[BLOCK_SIZE];
+	dir_table d;
+	char pad[BLOCK_SIZE];
 }
   padded_dir_table;
 
@@ -100,7 +100,7 @@ static int create_dir_entry(dir_entry *entry, const char* filename,
 static int get_free_block(int* free_blk);
 static int update_superblock();
 static int update_fat();
-static int update_table(padded_dir_table* table, unsigned int block_num);
+static int update_table(padded_dir_table* table);
 
 /* GLOBAL VARIABLES */
 int BACKING_STORE;
@@ -357,6 +357,10 @@ static int update_superblock()
 	return 0;
 }
 
+/** update_fat()
+ *
+ * Writes fat to BACKING_STORE.
+ */
 static int update_fat()
 {
 	printf("UPDATING FAT");
@@ -371,10 +375,14 @@ static int update_fat()
 	return 0;
 }
 
-static int update_table(padded_dir_table* table, unsigned int block_num)
+/** update_table(padded_dir_table* table)
+ *
+ * Writes table to BACKING_STORE.
+ */
+static int update_table(padded_dir_table* table)
 {
 	printf("UPDATING TABLE");
-	lseek(BACKING_STORE, block_num * BLOCK_SIZE, SEEK_SET);
+	lseek(BACKING_STORE, table->d.entries[0].block_num * BLOCK_SIZE, SEEK_SET);
 
 	int write_check = write(BACKING_STORE, table, BLOCK_SIZE);
 	if (write_check < 0)
@@ -478,7 +486,7 @@ static int jands_mkdir(const char *path, mode_t mode)
 	print_dir_entry(&entry);
 	parent_table.d.entries[parent_table.d.num_entries] = entry;
 	parent_table.d.num_entries += 1;
-	res = update_table(&parent_table, parent_table.d.entries[0].block_num);
+	res = update_table(&parent_table);
 	print_dir_table(&parent_table);
 	if (res < 0)
 		return res;
@@ -501,7 +509,7 @@ static int jands_mkdir(const char *path, mode_t mode)
 	printf("NEW TABLE CREATED\n");
 	print_dir_table(&new_table);
 
-	res = update_table(&new_table, entry.block_num);
+	res = update_table(&new_table);
 	return res;
 }
 
@@ -546,6 +554,7 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	/* Add to parent directory table */
 	table.d.entries[table.d.num_entries] = new_entry;
 	table.d.num_entries++;
+	update_table(&table);
 
 	return res;
 }
