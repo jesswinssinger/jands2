@@ -112,7 +112,6 @@ static int update_table(padded_dir_table* table);
 int BACKING_STORE;
 jands_superblock superblock;
 unsigned int fat[FAT_ENTRY_COUNT];
-dir_table current_dir;
 size_t max_dir_entries;
 
 
