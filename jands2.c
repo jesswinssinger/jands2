@@ -11,6 +11,7 @@
   * Add "/" to beginning of directory names for ls.
   * edit mkdir to adjust for availability
   * add permissions for admin
+  * update getattr
 */
 
 #define FUSE_USE_VERSION 26
@@ -339,7 +340,7 @@ static int get_free_block(int* free_blk)
  */
 static int update_superblock()
 {
-	printf("IN UPDATE_superblock\n\n");
+	printf("IN UPDATE_superblock\n");
 	int write_check;
 
 	printf("updating....\n");
@@ -353,7 +354,7 @@ static int update_superblock()
 
 	if (write_check < 0)
 		return write_check;
-	printf("SUPERBLOCK UPDATED");
+	printf("SUPERBLOCK UPDATED\n");
 	return 0;
 }
 
@@ -363,7 +364,7 @@ static int update_superblock()
  */
 static int update_fat()
 {
-	printf("UPDATING FAT");
+	printf("UPDATING FAT\n");
 	padded_fat pf;
 	memcpy(pf.f, fat, sizeof(fat));
 	lseek(BACKING_STORE, FAT_OFFSET * BLOCK_SIZE, SEEK_SET);
@@ -371,7 +372,7 @@ static int update_fat()
 	int write_check = write(BACKING_STORE, &pf, BLOCK_SIZE*2);
 	if (write_check < 0)
 		return write_check;
-	printf("FAT UPDATED");
+	printf("FAT UPDATED\n");
 	return 0;
 }
 
@@ -381,7 +382,7 @@ static int update_fat()
  */
 static int update_table(padded_dir_table* table)
 {
-	printf("UPDATING TABLE");
+	printf("UPDATING TABLE\n");
 	lseek(BACKING_STORE, table->d.entries[0].block_num * BLOCK_SIZE, SEEK_SET);
 
 	int write_check = write(BACKING_STORE, table, BLOCK_SIZE);
@@ -412,7 +413,9 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	if (res < 0)
 		return res;
 
-	stbuf->st_mode = S_IFDIR | entry.mode;
+	stbuf->st_uid = getuid();
+	stbuf->st_gid = getgid();
+	stbuf->st_mode = S_IFDIR | entry.mode; // TODO: is this correct?
 	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
 	if (strcmp(path, "/") == 0)
@@ -426,7 +429,7 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		   off_t offset, struct fuse_file_info *fi)
 {
-	printf("IN READDIR\n\n");
+	printf("IN READDIR\n");
 	(void) fi;
 
 	int res;
@@ -515,15 +518,22 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 //static int jands_release(const char* path, struct fuse_file_info *fi)
 //static int jands_create(const char* path, mode_t mode)
-//static int jands_fgetattr(const char* path, struct stat* stbuf)
+static int jands_fgetattr(const char* path, struct stat* stbuf)
+{
+	printf("IN FGETATTR\n");
+	return jands_getattr(path, stbuf);
+}
+
 static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 {
+	printf("IN MKNOD\n");
 	/* Return error if mode is not for regular file */
 	if (!S_ISREG(mode))
 		return -EACCES;
 
 	int res = 0;
 
+	printf("parsing path....");
 	/* Parse path. */
 	char filename[MAX_FILENAME_LEN];
 	char dir_path[MAX_PATH_LEN];
@@ -531,45 +541,61 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	if (res < 0)
 		return res;
 
+	printf("getting parent table...");
 	/* Get parent directory. */
 	padded_dir_table table;
 	res = get_padded_dir_table(path, &table);
+	if (res < 0)
+		return res;
 
+	printf("checking file doesn't already exist....");
 	/* Check that a file with same name does not exist. */
 	dir_entry node;
-	int check_no_exist = get_entry(&node, &table, filename);
-	if (!check_no_exist)
+	res = get_entry(&node, &table, filename);
+	if (!res)
 		return -EEXIST;
 
+	printf("allocating free block...");
 	/* Allocate free block for new file. */
 	int free_block = 0;
 	res = get_free_block(&free_block);
 	if (res < 0)
 		return res;
 
+	printf("creating new entry for parent table...");
 	/* Create new entry for directory table */
 	dir_entry new_entry;
 	res = create_dir_entry(&new_entry, filename, 0, mode, free_block, 0);
+	if (res < 0)
+		return res;
 
+	printf("adding to parent dir table and updating....");
 	/* Add to parent directory table */
 	table.d.entries[table.d.num_entries] = new_entry;
 	table.d.num_entries++;
-	update_table(&table);
+	res = update_table(&table);
 
+	printf("done! %d\n", res);
 	return res;
 }
 
-// static int jands_open(const char* path, struct fuse_file_info* fi)
-// {
-// 	(void) fi; //TODO: do we want to set anything with this?
-//  dir_entry entry;
-//  padded_dir_table table;
-//  get_entry_and_table(&entry, &table, path);
-// 	getattr()
-// 	//check existance
-// 	//check Permissions
-// 	//
-// }
+static int jands_open(const char* path, struct fuse_file_info* fi)
+{
+	printf("IN JANDS_OPEN\n");
+	(void) fi; //TODO: do we want to set anything with this?
+	int res = 0;
+
+	dir_entry entry;
+	padded_dir_table table;
+	res = get_entry_and_table(&entry, &table, path);
+	if (res < 0)
+		return res;
+
+	printf("calling jands_access in open");
+	res = jands_access(path, fi->flags);
+	printf("res = %d", res);
+	return res;
+}
 //static int jands_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
 //static int jands_readlink(const char* path, char* buf, size_t size)
 //static int jands_rmdir(const char* path)
@@ -683,15 +709,15 @@ static struct fuse_operations jands_oper = {
 	.mkdir    = jands_mkdir,
 	//.release = jands_release,
 	//.create = jands_create,
-	//.fgetattr = jands_fgetattr,
+	.fgetattr = jands_fgetattr,
 	.mknod      = jands_mknod,
-	//.open = jands_open,
+	.open = jands_open,
 	//.read = jands_read,
 	//.readlink = jands_readlink,
 	//.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
 	//.symlink  = jands_symlink,
-	//.truncate = jands_truncate,
+	// .truncate = jands_truncate,
 	//.unlink   = jands_unlink,
 	//.write    = jands_write,
 	.init       = jands_init,
