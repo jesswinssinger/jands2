@@ -12,6 +12,7 @@
   * edit mkdir to adjust for availability
   * add permissions for admin
   * update getattr
+  * add indexes to table entries for O(1) lookup when you have table and entry
 */
 
 #define FUSE_USE_VERSION 26
@@ -71,8 +72,8 @@ typedef struct {
 	size_t mode;      //< Permissions
 	size_t block_num; //< Block num (to find in FAT)
 	size_t size;      //< Size of file; if subdir, set to 0
-	// int date_created;
-	// int date_modified;
+	time_t atime;	  //< last accessed
+	time_t mtime;	  //< last modified
 }
   dir_entry;
 
@@ -93,7 +94,7 @@ typedef union {
 static void print_dir_table(padded_dir_table *table);
 static void print_dir_entry(dir_entry *entry);
 static int parse_path(const char *path, char *dir_path, char *filename);
-static int get_padded_dir_table(const char *path, padded_dir_table *table);
+static int get_padded_table(const char *path, padded_dir_table *table);
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename);
 static int get_entry_and_table(dir_entry *entry, padded_dir_table *table, const char* path);
 static int create_dir_entry(dir_entry *entry, const char* filename,
@@ -172,13 +173,13 @@ static int parse_path(const char *path, char *dir_path, char *filename)
 	return 0;
 }
 
-/** get_padded_dir_table()
+/** get_padded_table()
  *  Buffers padded_dir_table into table based on path
  *  Returns -1 if directory does not exist
  */
-static int get_padded_dir_table(const char *path, padded_dir_table *table)
+static int get_padded_table(const char *path, padded_dir_table *table)
 {
-	printf("IN GET_padded_dir_table\n\n");
+	printf("IN get_padded_table\n\n");
 	printf("PATH = %s\n", path);
 
 	int res = 0;
@@ -262,7 +263,8 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 /** get_entry_and_table(dir_entry *entry, padded_dir_table *table,
  * 						const char* path)
  *
- * Buffers dir entry and table for the given path.
+ * Buffers entry and parent table into entry and table for given
+ * path.
  * \returns 0 on success, -ENOENT if entry could not be found.
  */
 static int get_entry_and_table(dir_entry *entry, padded_dir_table *table,
@@ -271,7 +273,7 @@ static int get_entry_and_table(dir_entry *entry, padded_dir_table *table,
 	printf("IN GET_ENTRY_AND_TABLE\n");
 	int res;
 
-	res = get_padded_dir_table(path, table);
+	res = get_padded_table(path, table);
 
 	if (res < 0)
 		return res;
@@ -297,6 +299,8 @@ static int create_dir_entry(dir_entry *entry, const char* filename,
 	entry->mode = mode;
 	entry->block_num = block_num;
 	entry->size = size;
+	entry->atime = time(NULL);
+	entry->mtime = time(NULL);
 
 	return 0;
 }
@@ -415,13 +419,28 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 
 	stbuf->st_uid = getuid();
 	stbuf->st_gid = getgid();
-	stbuf->st_mode = S_IFDIR | entry.mode; // TODO: is this correct?
+	stbuf->st_mtime = entry.mtime;
+	stbuf->st_mode = S_IFDIR | entry.mode;
 	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
-	if (strcmp(path, "/") == 0)
-		stbuf->st_nlink = 2;
-	else
+
+	if (entry.mode & S_IFDIR) {
+		stbuf->st_nlink = 2; //TODO: LINKS!!! change struct to accommodate
+		stbuf->st_atime = time(NULL);
+
+		int counter = 0;
+		while (counter < table.d.num_entries) {
+			if (strcmp(table.d.entries[counter].name, entry.name)) {
+				table.d.entries[counter].atime = time(NULL);
+				break;
+			}
+			counter++;
+		}
+	}
+	else {
 		stbuf->st_nlink = 1;
+		stbuf->st_atime = entry.atime;
+	}
 
 	return 0;
 }
@@ -441,6 +460,22 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (res < 0)
 		return res;
 
+	/* Update access time of parent directory. */
+	table.d.entries[0].atime = time(NULL);
+
+	/* Update access time of directory being read. */
+	int temp = 0;
+	while (temp < table.d.num_entries) {
+		if (!strcmp(table.d.entries[temp].name, entry.name)) {
+			table.d.entries[temp].atime = time(NULL);
+			break;
+		}
+		temp++;
+	}
+
+	update_table(&table);
+
+	/* Get dir table of directory being read. */
 	res = lseek(BACKING_STORE, entry.block_num*BLOCK_SIZE, SEEK_SET);
 	if (res < 0)
 		return res;
@@ -448,10 +483,28 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (res < 0)
 		return res;
 
+	/* Update access time of . */
+	table.d.entries[0].atime = time(NULL);
+	update_table(&table);
+
+	/* Buffer the entries into buf using filler. */
 	int counter = offset;
 	while ( counter < table.d.num_entries ) {
-		filler(buf, table.d.entries[counter].name, NULL, counter+1);
-		counter += 1;
+		entry = table.d.entries[counter];
+		// check "." of subdirectories to ensure atime is correct
+		if (entry.mode & S_IFDIR) {
+			padded_dir_table subdir;
+			res = lseek(BACKING_STORE, entry.block_num*BLOCK_SIZE, SEEK_SET);
+			if (res < 0)
+				return res;
+			res = read(BACKING_STORE, &subdir, BLOCK_SIZE);
+			if (res < 0)
+				return res;
+			table.d.entries[counter].atime = subdir.d.entries[0].atime;
+			update_table(&table);
+		}
+		filler(buf, entry.name, NULL, counter+1);
+		counter++;
 	}
 
 	return 0;
@@ -465,7 +518,9 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 	/* Save parent directory table. */
 	padded_dir_table parent_table;
-	get_padded_dir_table(path, &parent_table);
+	get_padded_table(path, &parent_table);
+	parent_table.d.entries[0].atime = time(NULL);
+	update_table(&parent_table);
 
 	/* If directory table is full, return error. */
 	if (parent_table.d.num_entries >= max_dir_entries)
@@ -485,12 +540,11 @@ static int jands_mkdir(const char *path, mode_t mode)
 	/* Add entry to parent's directory table. */
 	dir_entry entry;
 	create_dir_entry(&entry, filename, 0x10, mode, free_blk, 0);
-	printf("NEW ENTRY IN ROOT TABLE:::::\n");
-	print_dir_entry(&entry);
+
 	parent_table.d.entries[parent_table.d.num_entries] = entry;
 	parent_table.d.num_entries += 1;
+
 	res = update_table(&parent_table);
-	print_dir_table(&parent_table);
 	if (res < 0)
 		return res;
 
@@ -518,6 +572,7 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 //static int jands_release(const char* path, struct fuse_file_info *fi)
 //static int jands_create(const char* path, mode_t mode)
+
 static int jands_fgetattr(const char* path, struct stat* stbuf)
 {
 	printf("IN FGETATTR\n");
@@ -544,7 +599,7 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	printf("getting parent table...");
 	/* Get parent directory. */
 	padded_dir_table table;
-	res = get_padded_dir_table(path, &table);
+	res = get_padded_table(path, &table);
 	if (res < 0)
 		return res;
 
@@ -579,10 +634,57 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	return res;
 }
 
+/** Open a file
+	 *
+	 * Open flags are available in fi->flags. The following rules
+	 * apply.
+	 *
+	 *  - Creation (O_CREAT, O_EXCL, O_NOCTTY) flags will be
+	 *    filtered out / handled by the kernel.
+	 *
+	 *  - Access modes (O_RDONLY, O_WRONLY, O_RDWR) should be used
+	 *    by the filesystem to check if the operation is
+	 *    permitted.  If the ``-o default_permissions`` mount
+	 *    option is given, this check is already done by the
+	 *    kernel before calling open() and may thus be omitted by
+	 *    the filesystem.
+	 *
+	 *  - When writeback caching is enabled, the kernel may send
+	 *    read requests even for files opened with O_WRONLY. The
+	 *    filesystem should be prepared to handle this.
+	 *
+	 *  - When writeback caching is disabled, the filesystem is
+	 *    expected to properly handle the O_APPEND flag and ensure
+	 *    that each write is appending to the end of the file.
+	 *
+         *  - When writeback caching is enabled, the kernel will
+	 *    handle O_APPEND. However, unless all changes to the file
+	 *    come through the kernel this will not work reliably. The
+	 *    filesystem should thus either ignore the O_APPEND flag
+	 *    (and let the kernel handle it), or return an error
+	 *    (indicating that reliably O_APPEND is not available).
+	 *
+	 * Filesystem may store an arbitrary file handle (pointer,
+	 * index, etc) in fi->fh, and use this in other all other file
+	 * operations (read, write, flush, release, fsync).
+	 *
+	 * Filesystem may also implement stateless file I/O and not store
+	 * anything in fi->fh.
+	 *
+	 * There are also some flags (direct_io, keep_cache) which the
+	 * filesystem may set in fi, to change the way the file is opened.
+	 * See fuse_file_info structure in <fuse_common.h> for more details.
+	 *
+	 * If this request is answered with an error code of ENOSYS
+	 * and FUSE_CAP_NO_OPEN_SUPPORT is set in
+	 * `fuse_conn_info.capable`, this is treated as success and
+	 * future calls to open will also succeed without being send
+	 * to the filesystem process.
+	 *
+	 */
 static int jands_open(const char* path, struct fuse_file_info* fi)
 {
 	printf("IN JANDS_OPEN\n");
-	(void) fi; //TODO: do we want to set anything with this?
 	int res = 0;
 
 	dir_entry entry;
@@ -596,6 +698,7 @@ static int jands_open(const char* path, struct fuse_file_info* fi)
 	printf("res = %d", res);
 	return res;
 }
+
 //static int jands_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
 //static int jands_readlink(const char* path, char* buf, size_t size)
 //static int jands_rmdir(const char* path)
@@ -617,7 +720,26 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 }
 
 //static int jands_symlink(const char* to, const char* from)
-//static int jands_truncate(const char* path, off_t size)
+
+// static int jands_truncate(const char* path, off_t size)
+// {
+// 	int res;
+//
+// 	/* Get entry and table. */
+// 	dir_entry entry;
+// 	padded_dir_table table;
+// 	res = get_entry_and_table(&entry, &table, path);
+// 	if (res < 0)
+// 		return res;
+//
+// 	if (size != entry.size) {
+//
+// 	}
+// 	//If the size changed, then the st_ctime and st_mtime fields
+//        // (respectively, time of last status change and time of last
+//        // modification; see inode(7)) for the file are updated, and the set-
+//        // user-ID and set-group-ID mode bits may be cleared.
+// }
 //static int jands_unlink(const char* path)
 //static int jands_write(const char* path, const char *buf, size_t size,
 //                      off_t offset, struct fuse_file_info* fi)
@@ -628,7 +750,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 	printf("IN INIT\n\n");
 	max_dir_entries = (BLOCK_SIZE - 1)/sizeof(dir_entry);
 	int no_file = access("BACKING_STORE", F_OK);
-	BACKING_STORE = open("BACKING_STORE", O_RDWR | O_CREAT, 0777);
+	BACKING_STORE = open("BACKING_STORE", O_RDWR | O_CREAT, 0755);
 
 	if (no_file) {
 		/* Initialize superblock. */
@@ -668,6 +790,8 @@ static void* jands_init(struct fuse_conn_info *conn)
 		  root.mode = 0777;
 		  root.block_num = ROOT_OFFSET;
 		  root.size = 0;
+		  root.atime = time(NULL);
+		  root.mtime = time(NULL);
 
 		// Entry for root's parent dir: ..
 		dir_entry parent;
@@ -676,6 +800,8 @@ static void* jands_init(struct fuse_conn_info *conn)
 		  parent.mode = 0777;
 		  parent.block_num = -1;
 		  parent.size = 0;
+		  root.atime = time(NULL);
+		  root.mtime = time(NULL);
 
 		// Table
 		dir_table root_table;
