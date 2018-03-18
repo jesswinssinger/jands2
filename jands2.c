@@ -9,9 +9,7 @@
   * Support directories larger than block size.
   * edit mkdir to adjust for availability
   * add permissions for admin
-  * update getattr
-  * add index to get_entry_and_table for O(1) lookup when you have to
-  * 	modify entry
+  * update getattr for links
 */
 
 #define FUSE_USE_VERSION 26
@@ -244,7 +242,7 @@ static int get_padded_table(const char *path, padded_dir_table *table)
 /* get_entry(dir_entry *dir_entry, padded_dir_table table, char* filename)
  *
  * Buffers directory table entry requested (based on filename) into dir_entry
- * Returns 0 on success, errors if entry doesn't exist.
+ * Returns index of entry in table on success, errors if entry doesn't exist.
  */
 static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 {
@@ -260,7 +258,7 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
 			*entry = table->d.entries[i];
 			printf("FOUND ENTRY FOR %s\n", filename);
 			print_dir_entry(entry);
-			return 0;
+			return i;
 		}
 	}
 	return -ENOENT;
@@ -271,7 +269,8 @@ static int get_entry(dir_entry *entry, padded_dir_table *table, char* filename)
  *
  * Buffers entry and parent table into entry and table for given
  * path.
- * \returns 0 on success, -ENOENT if entry could not be found.
+ * \returns index of entry in table on success,
+ *			-ENOENT if entry could not be found.
  */
 static int get_entry_and_table(dir_entry *entry, padded_dir_table *table,
 	const char* path)
@@ -408,8 +407,12 @@ static int jands_access(const char *path, int mask)
 
 	dir_entry entry;
 	padded_dir_table table;
+	int res = get_entry_and_table(&entry, &table, path);
 
-	return get_entry_and_table(&entry, &table, path);
+	if (res < 0) // errors
+		return res;
+	else // returned index of entry successfully
+		return 0;
 }
 
 static int jands_getattr(const char *path, struct stat *stbuf)
@@ -430,22 +433,29 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
 
+	time_t new_atime = time(NULL);
 	if (entry.mode & S_IFDIR) {
-		stbuf->st_nlink = 2; //TODO: LINKS!!! change struct to accommodate
-		stbuf->st_atime = time(NULL);
+		/* Update access time in parent dir */
+		table.d.entries[res].atime = new_atime;
+		update_table(&table);
 
-		int counter = 0;
-		while (counter < table.d.num_entries) {
-			if (strcmp(table.d.entries[counter].name, entry.name)) {
-				table.d.entries[counter].atime = time(NULL);
-				break;
-			}
-			counter++;
-		}
+		/* Update access time in subdir */
+		padded_dir_table subdir;
+		res = lseek(BACKING_STORE, table.d.entries.[res].block_num * BLOCK_SIZE, SEEK_SET);
+		if (res < 0)
+			return res;
+		res = read(BACKING_STORE, &subdir, BLOCK_SIZE);
+		if (res < 0)
+			return res;
+		subdir.d.entries[0].atime = new_atime;
+		update_table(&subdir);
+
+		stbuf->st_nlink = 2; //TODO: LINKS
+		stbuf->st_atime = new_atime;
 	}
 	else {
 		stbuf->st_nlink = 1;
-		stbuf->st_atime = entry.atime;
+		stbuf->st_atime = new_atime;
 	}
 
 	return 0;
@@ -466,18 +476,8 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (res < 0)
 		return res;
 
-	/* Update access time of parent directory. */
-	table.d.entries[0].atime = time(NULL);
-
-	/* Update access time of directory being read. */
-	int temp = 0;
-	while (temp < table.d.num_entries) {
-		if (!strcmp(table.d.entries[temp].name, entry.name)) {
-			table.d.entries[temp].atime = time(NULL);
-			break;
-		}
-		temp++;
-	}
+	/* Update access time of dir about to be read. */
+	table.d.entries[res].atime = time(NULL);
 
 	update_table(&table);
 
@@ -497,18 +497,6 @@ static int jands_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	int counter = offset;
 	while ( counter < table.d.num_entries ) {
 		entry = table.d.entries[counter];
-		// check "." of subdirectories to ensure atime is correct
-		if (entry.mode & S_IFDIR) {
-			padded_dir_table subdir;
-			res = lseek(BACKING_STORE, entry.block_num*BLOCK_SIZE, SEEK_SET);
-			if (res < 0)
-				return res;
-			res = read(BACKING_STORE, &subdir, BLOCK_SIZE);
-			if (res < 0)
-				return res;
-			table.d.entries[counter].atime = subdir.d.entries[0].atime;
-			update_table(&table);
-		}
 		filler(buf, entry.name, NULL, counter+1);
 		counter++;
 	}
@@ -691,83 +679,70 @@ static int jands_truncate(const char* path, off_t size)
 	if (res < 0)
 		return res;
 
+	int entry_index = res;
+
 	//TODO: "set-user_ID and set_group-ID bits may be cleared"???
 	if (size != entry.size) {
-		int counter = 0;
-		//TODO: index
-		while (counter < table.d.num_entries) {
-			if (strcmp(table.d.entries[counter].name, entry.name)) {
+		/* Modify fat to reflect number of blocks occupied. */
+		int old_size = table.d.entries[entry_index].size;
+		double new_block_cnt = ceil(size / BLOCK_SIZE);
+		double old_block_cnt = ceil(old_size / BLOCK_SIZE);
+		int temp = table.d.entries[entry_index].block_num;
+		int block_cnt = 0;
 
-			/* Modify fat to reflect number of blocks occupied. */
-				int old_size = table.d.entries[counter].size;
-				double new_block_cnt = ceil(size / BLOCK_SIZE);
-				double old_block_cnt = ceil(old_size / BLOCK_SIZE);
-
-				int temp;
-				int block_cnt;
-
-				if (new_block_cnt < old_block_cnt) {
-					temp = table.d.entries[counter].block_num;
-					block_cnt = 0;
-
+		if (new_block_cnt < old_block_cnt) {
+			while (temp != EOC) {
+				if (block_cnt == new_block_cnt) {
 					while (temp != EOC) {
-						if (block_cnt == new_block_cnt) {
-							while (temp != EOC) {
-								temp = fat[temp];
-								fat[temp] = EOC;
-							}
-						}
-						else {
-							temp = fat[temp];
-							block_cnt++;
-						}
+						temp = fat[temp];
+						fat[temp] = EOC;
 					}
 				}
-				else if (old_block_cnt > new_block_cnt) {
-					temp = table.d.entries[counter].block_num;
-					block_cnt = 0;
-					int num_new_blocks = new_block_cnt - old_block_cnt;
-
-					while (fat[temp] != EOC) {
-						temp = fat[temp];
-					}
-
-					while (block_cnt < num_new_blocks) {
-						get_free_block(&(fat[temp]));
-
-						/* Add new data_blocks (BLOCK_SIZE null bytes). */
-						data_block blk;
-						res = lseek(BACKING_STORE, fat[temp]*BLOCK_SIZE, BLOCK_SIZE);
-						if (res < 0)
-							return res;
-						res = write(BACKING_STORE, &blk, BLOCK_SIZE);
-						if (res < 0)
-							return res;
-
-						temp = fat[temp];
-						block_cnt++;
-					}
+				else {
+					temp = fat[temp];
+					block_cnt++;
 				}
-
-				res = update_fat();
-				if (res < 0)
-					return res;
-
-				//TODO: fill rest of old last block with null bytes?
-
-			/* Update modification time and size. */
-				table.d.entries[counter].mtime = time(NULL);
-				table.d.entries[counter].size = size;
-
-				res = update_table(&table);
-				if (res < 0)
-					return res;
-
-				break;
 			}
-			counter++;
 		}
+		else if (old_block_cnt > new_block_cnt) {
+			int num_new_blocks = new_block_cnt - old_block_cnt;
+
+			while (fat[temp] != EOC) {
+				temp = fat[temp];
+			}
+
+			while (block_cnt < num_new_blocks) {
+				get_free_block(&(fat[temp]));
+
+				/* Add new data_blocks (BLOCK_SIZE null bytes). */
+				data_block blk;
+				res = lseek(BACKING_STORE, fat[temp]*BLOCK_SIZE, BLOCK_SIZE);
+				if (res < 0)
+					return res;
+				res = write(BACKING_STORE, &blk, BLOCK_SIZE);
+				if (res < 0)
+					return res;
+
+				temp = fat[temp];
+				block_cnt++;
+			}
+		}
+
+		res = update_fat();
+		if (res < 0)
+			return res;
+
+		//TODO: fill rest of old last block with null bytes?
+
+	/* Update modification time and size. */
+		table.d.entries[entry_index].mtime = time(NULL);
+		table.d.entries[entry_index].size = size;
+
+		res = update_table(&table);
+		if (res < 0)
+			return res;
 	}
+
 	return res;
 }
 //static int jands_unlink(const char* path)
@@ -817,7 +792,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		dir_entry root;
 		  strcpy(root.name, ".");
 		  root.attr = 0x10 & 0x04 & 0x02;
-		  root.mode = 0777;
+		  root.mode = 0755;
 		  root.block_num = ROOT_OFFSET;
 		  root.size = 0;
 		  root.atime = time(NULL);
@@ -827,7 +802,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		dir_entry parent;
 		  strcpy(parent.name, "..");
 		  parent.attr = 0x10 & 0x04 & 0x02;
-		  parent.mode = 0777;
+		  parent.mode = 0755;
 		  parent.block_num = -1;
 		  parent.size = 0;
 		  root.atime = time(NULL);
