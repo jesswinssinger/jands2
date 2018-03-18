@@ -645,8 +645,77 @@ static int jands_open(const char* path, struct fuse_file_info* fi)
 	printf("res = %d", res);
 	return res;
 }
+/*Read size bytes from the given file into the buffer buf,
+beginning offset bytes into the file. See read(2) for full details.
+Returns the number of bytes transferred,
+*/
+static int jands_read(const char* path, char *buf, size_t size, off_t offset,
+	struct fuse_file_info* fi)
+{
+	printf("IN READ\n");
 
-//static int jands_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+	int res = 0;
+
+	/* Get dir entry. */
+	dir_entry entry;
+	padded_dir_table table;
+	res = get_entry_and_table(&entry, &table, path);
+	if (res < 0)
+		return res;
+	int entry_index = res;
+
+	/* Check that offset is not at or beyond EOF. */
+	if (offset >= entry.size)
+		return 0;
+
+	/* Read size bytes into buf. */
+	res = lseek(BACKING_STORE, (entry.block_num*BLOCK_SIZE)+offset, SEEK_SET);
+	if (res < 0)
+		return res;
+
+	/* If size < BLOCK_SIZE - offset, just return the read. */
+	if (size < BLOCK_SIZE - offset) {
+		return read(BACKING_STORE, buf, size);
+	}
+
+	/* GENERAL CASE. */
+	int size_left = size;
+
+	// First read is rest of first block from offset.
+	res = read(BACKING_STORE, buf, BLOCK_SIZE-offset);
+	if (res < 0)
+		return res;
+
+	size_left -= (BLOCK_SIZE - offset);
+
+	// Read rest in block_size chunks until less than a block left to read.
+	int next_blk = fat[entry.block_num];
+	while (((size_left % BLOCK_SIZE) > 0) && (next_blk != EOC)) {
+		res = lseek(BACKING_STORE, next_blk*BLOCK_SIZE, SEEK_SET);
+		if (res < 0)
+			return res;
+		res = read(BACKING_STORE, buf, BLOCK_SIZE);
+		if (res < 0)
+			return res;
+
+		size_left -= BLOCK_SIZE;
+		next_blk = fat[next_blk];
+	}
+
+	// If we reached EOF, return number of bytes read.
+	if (next_blk == EOC) {
+		return size - size_left;
+	}
+
+	// Otherwise, read last bit.
+	lseek(BACKING_STORE, next_blk*BLOCK_SIZE, SEEK_SET);
+	res = read(BACKING_STORE, buf, size_left);
+	if (res < 0)
+		return res;
+
+	return size;
+}
+
 //static int jands_readlink(const char* path, char* buf, size_t size)
 //static int jands_rmdir(const char* path)
 
@@ -670,6 +739,7 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 
 static int jands_truncate(const char* path, off_t size)
 {
+	printf("IN TRUNCATE\n");
 	int res;
 
 	/* Get entry and table. */
@@ -843,7 +913,7 @@ static struct fuse_operations jands_oper = {
 	.fgetattr = jands_fgetattr,
 	.mknod      = jands_mknod,
 	.open = jands_open,
-	//.read = jands_read,
+	.read = jands_read,
 	//.readlink = jands_readlink,
 	//.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
