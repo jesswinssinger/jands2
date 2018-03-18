@@ -5,14 +5,13 @@
  Copyright (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
 
  gcc -Wall `pkg-config fuse --cflags --libs` jands2.c -o jands2
- TODO
-  * Add global dir table for current directory. (and update fns)
+ TODO:
   * Support directories larger than block size.
-  * Add "/" to beginning of directory names for ls.
   * edit mkdir to adjust for availability
   * add permissions for admin
   * update getattr
-  * add indexes to table entries for O(1) lookup when you have table and entry
+  * add index to get_entry_and_table for O(1) lookup when you have to
+  * 	modify entry
 */
 
 #define FUSE_USE_VERSION 26
@@ -29,6 +28,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <math.h>
 
 #define FAT_DISK 10000000
 #define BLOCK_SIZE 4096
@@ -52,19 +52,19 @@ typedef struct {
 	size_t data_blocks_used;    //< # of blocks currently in use
 	size_t unpriv_availability; //< # of blocks usable by unprivileged users
 }
-  jands_superblock;
+	jands_superblock;
 
 typedef union {
 	jands_superblock s;
 	char pad[BLOCK_SIZE];
 }
-  padded_superblock;
+	padded_superblock;
 
 typedef union {
 	size_t f[FAT_ENTRY_COUNT];
 	char pad[BLOCK_SIZE*2];
 }
-  padded_fat;
+	padded_fat;
 
 typedef struct {
 	char name[MAX_FILENAME_LEN]; //< Name of file/dir (limited to 32 chars)
@@ -75,19 +75,25 @@ typedef struct {
 	time_t atime;	  //< last accessed
 	time_t mtime;	  //< last modified
 }
-  dir_entry;
+	dir_entry;
 
 typedef struct {
 	size_t num_entries;
 	dir_entry entries[(BLOCK_SIZE - 1)/sizeof(dir_entry)];
 }
-  dir_table;
+	dir_table;
 
 typedef union {
 	dir_table d;
 	char pad[BLOCK_SIZE];
 }
-  padded_dir_table;
+	padded_dir_table;
+
+//TODO: make this nonpadded to accomodate multiple files per block?
+typedef struct {
+	char data[BLOCK_SIZE];
+}
+	data_block;
 
 
 /* FUNCTION DECLARATIONS */
@@ -634,54 +640,7 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	return res;
 }
 
-/** Open a file
-	 *
-	 * Open flags are available in fi->flags. The following rules
-	 * apply.
-	 *
-	 *  - Creation (O_CREAT, O_EXCL, O_NOCTTY) flags will be
-	 *    filtered out / handled by the kernel.
-	 *
-	 *  - Access modes (O_RDONLY, O_WRONLY, O_RDWR) should be used
-	 *    by the filesystem to check if the operation is
-	 *    permitted.  If the ``-o default_permissions`` mount
-	 *    option is given, this check is already done by the
-	 *    kernel before calling open() and may thus be omitted by
-	 *    the filesystem.
-	 *
-	 *  - When writeback caching is enabled, the kernel may send
-	 *    read requests even for files opened with O_WRONLY. The
-	 *    filesystem should be prepared to handle this.
-	 *
-	 *  - When writeback caching is disabled, the filesystem is
-	 *    expected to properly handle the O_APPEND flag and ensure
-	 *    that each write is appending to the end of the file.
-	 *
-         *  - When writeback caching is enabled, the kernel will
-	 *    handle O_APPEND. However, unless all changes to the file
-	 *    come through the kernel this will not work reliably. The
-	 *    filesystem should thus either ignore the O_APPEND flag
-	 *    (and let the kernel handle it), or return an error
-	 *    (indicating that reliably O_APPEND is not available).
-	 *
-	 * Filesystem may store an arbitrary file handle (pointer,
-	 * index, etc) in fi->fh, and use this in other all other file
-	 * operations (read, write, flush, release, fsync).
-	 *
-	 * Filesystem may also implement stateless file I/O and not store
-	 * anything in fi->fh.
-	 *
-	 * There are also some flags (direct_io, keep_cache) which the
-	 * filesystem may set in fi, to change the way the file is opened.
-	 * See fuse_file_info structure in <fuse_common.h> for more details.
-	 *
-	 * If this request is answered with an error code of ENOSYS
-	 * and FUSE_CAP_NO_OPEN_SUPPORT is set in
-	 * `fuse_conn_info.capable`, this is treated as success and
-	 * future calls to open will also succeed without being send
-	 * to the filesystem process.
-	 *
-	 */
+//TODO: can open call access?
 static int jands_open(const char* path, struct fuse_file_info* fi)
 {
 	printf("IN JANDS_OPEN\n");
@@ -721,25 +680,96 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 
 //static int jands_symlink(const char* to, const char* from)
 
-// static int jands_truncate(const char* path, off_t size)
-// {
-// 	int res;
-//
-// 	/* Get entry and table. */
-// 	dir_entry entry;
-// 	padded_dir_table table;
-// 	res = get_entry_and_table(&entry, &table, path);
-// 	if (res < 0)
-// 		return res;
-//
-// 	if (size != entry.size) {
-//
-// 	}
-// 	//If the size changed, then the st_ctime and st_mtime fields
-//        // (respectively, time of last status change and time of last
-//        // modification; see inode(7)) for the file are updated, and the set-
-//        // user-ID and set-group-ID mode bits may be cleared.
-// }
+static int jands_truncate(const char* path, off_t size)
+{
+	int res;
+
+	/* Get entry and table. */
+	dir_entry entry;
+	padded_dir_table table;
+	res = get_entry_and_table(&entry, &table, path);
+	if (res < 0)
+		return res;
+
+	//TODO: "set-user_ID and set_group-ID bits may be cleared"???
+	if (size != entry.size) {
+		int counter = 0;
+		//TODO: index
+		while (counter < table.d.num_entries) {
+			if (strcmp(table.d.entries[counter].name, entry.name)) {
+
+			/* Modify fat to reflect number of blocks occupied. */
+				int old_size = table.d.entries[counter].size;
+				double new_block_cnt = ceil(size / BLOCK_SIZE);
+				double old_block_cnt = ceil(old_size / BLOCK_SIZE);
+
+				int temp;
+				int block_cnt;
+
+				if (new_block_cnt < old_block_cnt) {
+					temp = table.d.entries[counter].block_num;
+					block_cnt = 0;
+
+					while (temp != EOC) {
+						if (block_cnt == new_block_cnt) {
+							while (temp != EOC) {
+								temp = fat[temp];
+								fat[temp] = EOC;
+							}
+						}
+						else {
+							temp = fat[temp];
+							block_cnt++;
+						}
+					}
+				}
+				else if (old_block_cnt > new_block_cnt) {
+					temp = table.d.entries[counter].block_num;
+					block_cnt = 0;
+					int num_new_blocks = new_block_cnt - old_block_cnt;
+
+					while (fat[temp] != EOC) {
+						temp = fat[temp];
+					}
+
+					while (block_cnt < num_new_blocks) {
+						get_free_block(&(fat[temp]));
+
+						/* Add new data_blocks (BLOCK_SIZE null bytes). */
+						data_block blk;
+						res = lseek(BACKING_STORE, fat[temp]*BLOCK_SIZE, BLOCK_SIZE);
+						if (res < 0)
+							return res;
+						res = write(BACKING_STORE, &blk, BLOCK_SIZE);
+						if (res < 0)
+							return res;
+
+						temp = fat[temp];
+						block_cnt++;
+					}
+				}
+
+				res = update_fat();
+				if (res < 0)
+					return res;
+
+				//TODO: fill rest of old last block with null bytes?
+
+			/* Update modification time and size. */
+				table.d.entries[counter].mtime = time(NULL);
+				table.d.entries[counter].size = size;
+
+				res = update_table(&table);
+				if (res < 0)
+					return res;
+
+				break;
+			}
+			counter++;
+		}
+	}
+	return res;
+}
 //static int jands_unlink(const char* path)
 //static int jands_write(const char* path, const char *buf, size_t size,
 //                      off_t offset, struct fuse_file_info* fi)
@@ -843,7 +873,7 @@ static struct fuse_operations jands_oper = {
 	//.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
 	//.symlink  = jands_symlink,
-	// .truncate = jands_truncate,
+	.truncate = jands_truncate,
 	//.unlink   = jands_unlink,
 	//.write    = jands_write,
 	.init       = jands_init,
