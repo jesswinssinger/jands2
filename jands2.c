@@ -441,7 +441,7 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 
 		/* Update access time in subdir */
 		padded_dir_table subdir;
-		res = lseek(BACKING_STORE, table.d.entries.[res].block_num * BLOCK_SIZE, SEEK_SET);
+		res = lseek(BACKING_STORE, table.d.entries[res].block_num * BLOCK_SIZE, SEEK_SET);
 		if (res < 0)
 			return res;
 		res = read(BACKING_STORE, &subdir, BLOCK_SIZE);
@@ -662,7 +662,6 @@ static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 	res = get_entry_and_table(&entry, &table, path);
 	if (res < 0)
 		return res;
-	int entry_index = res;
 
 	/* Check that offset is not at or beyond EOF. */
 	if (offset >= entry.size)
@@ -717,7 +716,45 @@ static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 }
 
 //static int jands_readlink(const char* path, char* buf, size_t size)
-//static int jands_rmdir(const char* path)
+
+static int jands_rmdir(const char* path)
+{
+	int res = 0;
+
+	dir_entry entry;
+	padded_dir_table parent_table;
+
+	res = get_entry_and_table(&entry, &parent_table, path);
+	if (res < 0)
+		return res;
+
+	/* Return error if directory is not empty. */
+	if (entry.size > 0)
+		return ENOTEMPTY;
+
+	/* Remove entry from parent directory. */
+	int i;
+	for (i = res; i < max_dir_entries; ++i) {
+		parent_table.d.entries[i] = parent_table.d.entries[i+1];
+	}
+	parent_table.d.num_entries--;
+	res = update_table(&parent_table);
+	if (res < 0)
+		return res;
+
+	/* Update free list. */
+	int temp = entry.block_num;
+	while (fat[temp] != EOC) {
+		superblock.data_blocks_used--;
+		temp = fat[temp];
+	}
+
+	fat[temp] = superblock.free_list;
+	superblock.free_list = entry.block_num;
+	res = update_superblock();
+
+	return res;
+}
 
 static int jands_statfs(const char* path, struct statvfs* stbuf)
 {
@@ -915,7 +952,7 @@ static struct fuse_operations jands_oper = {
 	.open = jands_open,
 	.read = jands_read,
 	//.readlink = jands_readlink,
-	//.rmdir = jands_rmdir,
+	.rmdir = jands_rmdir,
 	.statfs     = jands_statfs,
 	//.symlink  = jands_symlink,
 	.truncate = jands_truncate,
