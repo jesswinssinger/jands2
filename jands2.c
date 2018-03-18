@@ -564,8 +564,12 @@ static int jands_mkdir(const char *path, mode_t mode)
 	return res;
 }
 
-//static int jands_release(const char* path, struct fuse_file_info *fi)
-//static int jands_create(const char* path, mode_t mode)
+//TODO: not sure what we would put here, since we don't have a data structure
+// for files....
+static int jands_release(const char* path, struct fuse_file_info *fi)
+{
+	return 0;
+}
 
 static int jands_fgetattr(const char* path, struct stat* stbuf)
 {
@@ -626,6 +630,11 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 
 	printf("done! %d\n", res);
 	return res;
+}
+
+static int jands_create(const char* path, mode_t mode)
+{
+	return jands_mknod(path, (mode | S_IFREG), (dev_t) NULL);
 }
 
 //TODO: can open call access?
@@ -945,10 +954,10 @@ static struct fuse_operations jands_oper = {
 	.access    = jands_access,
 	.readdir  = jands_readdir,
 	.mkdir    = jands_mkdir,
-	//.release = jands_release,
-	//.create = jands_create,
+	.release = jands_release,
 	.fgetattr = jands_fgetattr,
 	.mknod      = jands_mknod,
+	.create = jands_create,
 	.open = jands_open,
 	.read = jands_read,
 	//.readlink = jands_readlink,
