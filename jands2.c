@@ -781,11 +781,12 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 	return 0;
 }
 
-static int jands_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+static int jands_write(const char* path, const char *buf, size_t size,
+	off_t offset, struct fuse_file_info* fi)
 {
 	printf("IN WRITE\n\n\n");
-	int block_pointer;
 	int res = 0;
+	int block_pointer;
 	char curr_block[BLOCK_SIZE];
 
 	dir_entry file;
@@ -801,20 +802,21 @@ static int jands_write(const char* path, const char *buf, size_t size, off_t off
 	//add in max file size
 
 	int pointer = 0;
-	while(pointer < size){
-		if(offset > BLOCK_SIZE){
+	while (pointer < size) {
+		if (offset > BLOCK_SIZE) {
 			offset -= BLOCK_SIZE;
 			block_pointer = fat[block_pointer];
 		}
-		else{
+		else {
 			memcpy(curr_block, buf, size);
 			printf("entry num: %s\n\n\n", curr_block);
 
-			res = lseek(BACKING_STORE, block_pointer * BLOCK_SIZE + offset, SEEK_SET);
+			res = lseek(BACKING_STORE, block_pointer * BLOCK_SIZE + offset,
+					SEEK_SET);
 			if (res < 0)
 				return res;
 
-			if(size < BLOCK_SIZE){
+			if (size < BLOCK_SIZE) {
 				res = write(BACKING_STORE, curr_block, size);
 				if(res < 0)
 					return res;
@@ -822,7 +824,7 @@ static int jands_write(const char* path, const char *buf, size_t size, off_t off
 				directory.d.entries[entry_num].size += size;
 			}
 
-			else{
+			else {
 				res = write(BACKING_STORE, curr_block, BLOCK_SIZE);
 				if (res < 0)
 					return res;
@@ -918,9 +920,6 @@ static int jands_truncate(const char* path, off_t size)
 	return res;
 }
 //static int jands_unlink(const char* path)
-//static int jands_write(const char* path, const char *buf, size_t size,
-//                      off_t offset, struct fuse_file_info* fi)
-
 
 static void* jands_init(struct fuse_conn_info *conn)
 {
