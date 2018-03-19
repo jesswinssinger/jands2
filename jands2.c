@@ -9,6 +9,7 @@
   * edit mkdir to adjust for availability
   * add permissions for admin
   * update getattr for links
+  * total isn't correct for ls
 */
 
 #define FUSE_USE_VERSION 26
@@ -65,12 +66,13 @@ typedef union {
 
 typedef struct {
 	char name[MAX_FILENAME_LEN]; //< Name of file/dir (limited to 32 chars)
-	char attr;     //< Attributes
-	size_t mode;      //< Permissions
-	size_t block_num; //< Block num (to find in FAT)
-	size_t size;      //< Size of file; if subdir, set to 0
-	time_t atime;	  //< last accessed
-	time_t mtime;	  //< last modified
+	char attr;			//< Attributes
+	size_t mode;		//< Permissions
+	size_t block_num;	//< Block num (to find in FAT)
+	size_t size;		//< Size of file; if subdir, set to 0
+	size_t num_links;	//< # of symbolic links (if link, value is irrelevant)
+	time_t atime;		//< last accessed
+	time_t mtime;		//< last modified
 }
 	dir_entry;
 
@@ -304,6 +306,12 @@ static int create_dir_entry(dir_entry *entry, const char* filename,
 	entry->size = size;
 	entry->atime = time(NULL);
 	entry->mtime = time(NULL);
+	if (mode & S_IFDIR) {
+		entry->num_links = 2;
+	}
+	else {
+		entry->num_links = 1;
+	}
 
 	return 0;
 }
@@ -424,14 +432,17 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	if (res < 0)
 		return res;
 
+	time_t new_atime = time(NULL); // To update access time.
+
 	stbuf->st_uid = getuid();
 	stbuf->st_gid = getgid();
 	stbuf->st_mtime = entry.mtime;
 	stbuf->st_mode = entry.mode;
 	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
+	stbuf->st_nlink = entry.num_links;
+	stbuf->st_atime = new_atime;
 
-	time_t new_atime = time(NULL);
 	if (entry.mode & S_IFDIR) {
 		/* Update access time in parent dir */
 		table.d.entries[res].atime = new_atime;
@@ -447,15 +458,7 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 			return res;
 		subdir.d.entries[0].atime = new_atime;
 		update_table(&subdir);
-
-		stbuf->st_nlink = 2; //TODO: LINKS
-		stbuf->st_atime = new_atime;
 	}
-	else {
-		stbuf->st_nlink = 1;
-		stbuf->st_atime = new_atime;
-	}
-
 	return 0;
 }
 
@@ -682,7 +685,8 @@ static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 		return res;
 
 	/* If size < BLOCK_SIZE - offset, just return the read. */
-	if (size < BLOCK_SIZE - offset) {
+	if (size <= BLOCK_SIZE - offset) {
+		printf("basecase: size < blocksize - offset.\n");
 		return read(BACKING_STORE, buf, size);
 	}
 
@@ -724,10 +728,34 @@ static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 	return size;
 }
 
-//static int jands_readlink(const char* path, char* buf, size_t size)
+static int jands_readlink(const char* path, char* buf, size_t size) {
+
+	printf("IN READLINK\n\n");
+	int res = 0;
+
+	/* Get entry and table of the link. */
+	dir_entry link;
+	padded_dir_table table;
+	res = get_entry_and_table(&link, &table, path);
+	if (res < 0)
+		return res;
+
+	/* Get original file's path. */
+	char filepath[MAX_PATH_LEN];
+	res = lseek(BACKING_STORE, link.block_num*BLOCK_SIZE, SEEK_SET);
+	if (res < 0)
+		return res;
+	res = read(BACKING_STORE, filepath, MAX_PATH_LEN);
+	if (res < 0)
+		return res;
+
+	/* Read the file. */
+	return jands_read(filepath, buf, size, 0, (struct fuse_file_info*) NULL);
+}
 
 static int jands_rmdir(const char* path)
 {
+	printf("IN RMDIR\n\n");
 	int res = 0;
 
 	dir_entry entry;
@@ -839,7 +867,67 @@ static int jands_write(const char* path, const char *buf, size_t size,
 	return pointer;
 }
 
-//static int jands_symlink(const char* to, const char* from)
+static int jands_symlink(const char* to, const char* from)
+{
+	printf("IN SYMLINK\n\n");
+	int res = 0;
+
+	/* Check that from doesn't already exist. */
+	dir_entry link;
+	padded_dir_table link_dir;
+	res = get_entry_and_table(&link, &link_dir, from);
+	if (res >= 0)
+		return EEXIST;
+
+	printf("link doesn't already exist...\n ");
+
+	/* Get entry and table of target file. */
+	dir_entry target;
+	padded_dir_table target_dir;
+	res = get_entry_and_table(&target, &target_dir, to);
+	if (res < 0)
+		return res;
+
+	/* Update target entry's number of links. */
+	int entry_index = res;
+	target_dir.d.entries[entry_index].num_links++;
+	update_table(&target_dir);
+
+	/* Write address of target to new block. */
+	int new_block;
+	get_free_block(&new_block);
+
+	res = lseek(BACKING_STORE, new_block * BLOCK_SIZE, SEEK_SET);
+	if (res < 0)
+		return res;
+	res = write(BACKING_STORE, to, BLOCK_SIZE);
+	if (res < 0)
+		return res;
+
+	/* Create and add new dir entry for link. */
+	char linkname[MAX_FILENAME_LEN];
+	char linkpath[MAX_PATH_LEN];
+	res = parse_path(from, linkpath, linkname);
+	if (res < 0)
+		return res;
+
+	res = create_dir_entry(&link, linkname, target.attr,
+					target.mode | S_IFLNK, new_block, sizeof(to));
+	if (res < 0)
+		return res;
+
+	printf("getting dir table for link...%s\n", from);
+
+	res = get_padded_table(from, &link_dir);
+	if (res < 0)
+		return res;
+
+	link_dir.d.entries[link_dir.d.num_entries] = link;
+	link_dir.d.num_entries++;
+	res = update_table(&link_dir);
+
+	return res;
+}
 
 static int jands_truncate(const char* path, off_t size)
 {
@@ -968,6 +1056,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		  root.size = 0;
 		  root.atime = time(NULL);
 		  root.mtime = time(NULL);
+		  root.num_links = 2;
 
 		// Entry for root's parent dir: ..
 		dir_entry parent;
@@ -976,8 +1065,9 @@ static void* jands_init(struct fuse_conn_info *conn)
 		  parent.mode = S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
 		  parent.block_num = -1;
 		  parent.size = 0;
-		  root.atime = time(NULL);
-		  root.mtime = time(NULL);
+		  parent.atime = time(NULL);
+		  parent.mtime = time(NULL);
+		  parent.num_links = 2;
 
 		// Table
 		dir_table root_table;
@@ -1015,10 +1105,10 @@ static struct fuse_operations jands_oper = {
 	.create     = jands_create,
 	.open       = jands_open,
 	.read       = jands_read,
-	//.readlink = jands_readlink,
+	.readlink = jands_readlink,
 	.rmdir      = jands_rmdir,
 	.statfs     = jands_statfs,
-	//.symlink  = jands_symlink,
+	.symlink  = jands_symlink,
 	.truncate   = jands_truncate,
 	//.unlink   = jands_unlink,
 	.write      = jands_write,
