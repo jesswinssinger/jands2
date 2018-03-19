@@ -3,7 +3,6 @@
   * FAT file system
  FUSE: Filesystem in Userspace
  Copyright (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
-
  gcc -Wall `pkg-config fuse --cflags --libs` jands2.c -o jands2
  TODO:
   * Support directories larger than block size.
@@ -338,7 +337,7 @@ static int get_free_block(int* free_blk)
 		return update_fat_check;
 	}
 
-	*free_blk = superblock.free_list;
+	*free_blk = old_free_list;
 	return 0;
 }
 
@@ -428,7 +427,7 @@ static int jands_getattr(const char *path, struct stat *stbuf)
 	stbuf->st_uid = getuid();
 	stbuf->st_gid = getgid();
 	stbuf->st_mtime = entry.mtime;
-	stbuf->st_mode = S_IFDIR | entry.mode;
+	stbuf->st_mode = entry.mode;
 	stbuf->st_size = entry.size;
 	stbuf->st_blksize = BLOCK_SIZE;
 
@@ -532,7 +531,8 @@ static int jands_mkdir(const char *path, mode_t mode)
 
 	/* Add entry to parent's directory table. */
 	dir_entry entry;
-	create_dir_entry(&entry, filename, 0x10, mode, free_blk, 0);
+	create_dir_entry(&entry, filename, 0x10,
+									S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO, free_blk, 0);
 
 	parent_table.d.entries[parent_table.d.num_entries] = entry;
 	parent_table.d.num_entries += 1;
@@ -617,7 +617,8 @@ static int jands_mknod(const char* path, mode_t mode, dev_t rdev)
 	printf("creating new entry for parent table...");
 	/* Create new entry for directory table */
 	dir_entry new_entry;
-	res = create_dir_entry(&new_entry, filename, 0, mode, free_block, 0);
+	res = create_dir_entry(&new_entry, filename, 0,
+												S_IFREG | S_IRWXU | S_IRWXG | S_IRWXO, free_block, 0);
 	if (res < 0)
 		return res;
 
@@ -660,7 +661,7 @@ Returns the number of bytes transferred,
 static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 	struct fuse_file_info* fi)
 {
-	printf("IN READ\n");
+	printf("IN READ\n\n\n\n\n");
 
 	int res = 0;
 
@@ -714,7 +715,7 @@ static int jands_read(const char* path, char *buf, size_t size, off_t offset,
 		return size - size_left;
 	}
 
-	// Otherwise, read last bit.
+	// Otherwise, read last bits.
 	lseek(BACKING_STORE, next_blk*BLOCK_SIZE, SEEK_SET);
 	res = read(BACKING_STORE, buf, size_left);
 	if (res < 0)
@@ -778,6 +779,62 @@ static int jands_statfs(const char* path, struct statvfs* stbuf)
 	stbuf->f_namemax = 32;
 
 	return 0;
+}
+
+static int jands_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi)
+{
+	printf("IN WRITE\n\n\n");
+	int block_pointer;
+	int res = 0;
+	char curr_block[BLOCK_SIZE];
+
+	dir_entry file;
+	padded_dir_table directory;
+	int entry_num = get_entry_and_table(&file, &directory, path);
+	if (entry_num < 0)
+		return entry_num;
+
+	printf("entry num: %d\n\n\n", entry_num);
+
+	block_pointer = file.block_num;
+
+	//add in max file size
+
+	int pointer = 0;
+	while(pointer < size){
+		if(offset > BLOCK_SIZE){
+			offset -= BLOCK_SIZE;
+			block_pointer = fat[block_pointer];
+		}
+		else{
+			memcpy(curr_block, buf, size);
+			printf("entry num: %s\n\n\n", curr_block);
+
+			res = lseek(BACKING_STORE, block_pointer * BLOCK_SIZE + offset, SEEK_SET);
+			if (res < 0)
+				return res;
+
+			if(size < BLOCK_SIZE){
+				res = write(BACKING_STORE, curr_block, size);
+				if(res < 0)
+					return res;
+				pointer += size;
+				directory.d.entries[entry_num].size += size;
+			}
+
+			else{
+				res = write(BACKING_STORE, curr_block, BLOCK_SIZE);
+				if (res < 0)
+					return res;
+				pointer += BLOCK_SIZE;
+				block_pointer = fat[block_pointer];
+				directory.d.entries[entry_num].size += BLOCK_SIZE;
+			}
+
+			update_table(&directory);
+		}
+	}
+	return pointer;
 }
 
 //static int jands_symlink(const char* to, const char* from)
@@ -907,7 +964,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		dir_entry root;
 		  strcpy(root.name, ".");
 		  root.attr = 0x10 & 0x04 & 0x02;
-		  root.mode = 0755;
+		  root.mode = S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
 		  root.block_num = ROOT_OFFSET;
 		  root.size = 0;
 		  root.atime = time(NULL);
@@ -917,7 +974,7 @@ static void* jands_init(struct fuse_conn_info *conn)
 		dir_entry parent;
 		  strcpy(parent.name, "..");
 		  parent.attr = 0x10 & 0x04 & 0x02;
-		  parent.mode = 0755;
+		  parent.mode = S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
 		  parent.block_num = -1;
 		  parent.size = 0;
 		  root.atime = time(NULL);
@@ -949,23 +1006,23 @@ static void* jands_init(struct fuse_conn_info *conn)
 }
 
 static struct fuse_operations jands_oper = {
-	.getattr  = jands_getattr,
-	.access    = jands_access,
-	.readdir  = jands_readdir,
-	.mkdir    = jands_mkdir,
-	.release = jands_release,
-	.fgetattr = jands_fgetattr,
+	.getattr    = jands_getattr,
+	.access     = jands_access,
+	.readdir    = jands_readdir,
+	.mkdir      = jands_mkdir,
+	.release    = jands_release,
+	.fgetattr   = jands_fgetattr,
 	.mknod      = jands_mknod,
-	.create = jands_create,
-	.open = jands_open,
-	.read = jands_read,
+	.create     = jands_create,
+	.open       = jands_open,
+	.read       = jands_read,
 	//.readlink = jands_readlink,
-	.rmdir = jands_rmdir,
+	.rmdir      = jands_rmdir,
 	.statfs     = jands_statfs,
 	//.symlink  = jands_symlink,
-	.truncate = jands_truncate,
+	.truncate   = jands_truncate,
 	//.unlink   = jands_unlink,
-	//.write    = jands_write,
+	.write      = jands_write,
 	.init       = jands_init,
 };
 
