@@ -945,12 +945,17 @@ static int jands_truncate(const char* path, off_t size)
 
 	//TODO: "set-user_ID and set_group-ID bits may be cleared"???
 	if (size != entry.size) {
-		/* Modify fat to reflect number of blocks occupied. */
+		/* Modify fat and superblock to reflect number of blocks occupied. */
 		int old_size = table.d.entries[entry_index].size;
 		double new_block_cnt = ceil(size / BLOCK_SIZE);
 		double old_block_cnt = ceil(old_size / BLOCK_SIZE);
 		int temp = table.d.entries[entry_index].block_num;
 		int block_cnt = 0;
+
+		superblock.data_blocks_used += (new_block_cnt - old_block_cnt);
+		res = update_superblock();
+		if (res < 0)
+			return res;
 
 		if (new_block_cnt < old_block_cnt) {
 			while (temp != EOC) {
@@ -1007,7 +1012,85 @@ static int jands_truncate(const char* path, off_t size)
 
 	return res;
 }
-//static int jands_unlink(const char* path)
+
+static int jands_unlink(const char* path)
+{
+	/*Remove (delete) the given file, symbolic link, hard link,
+	or special node—but NOT a directory. Note that if you support
+	hard links, unlink only deletes the data when the last hard link
+	is removed. See unlink(2) for details. This function is needed
+	for almost any read/write filesystem.
+	*/
+	printf("IN UNLINK\n\n");
+	int res = 0;
+
+	/* Get entry and table. Save entry_index for its deletion later. */
+	dir_entry entry;
+	padded_dir_table table;
+	res = get_entry_and_table(&entry, &table, path);
+	if (res < 0)
+		return res;
+
+	int entry_index = res;
+
+	/* If file for removal is a directory, throw an error. */
+	if (entry.mode & S_IFDIR) {
+		return EISDIR;
+	}
+
+	if (entry.mode & S_IFLNK) {
+		/* Decrement num_links of original file by 1. */
+		char targetpath[MAX_PATH_LEN];
+
+		res = lseek(BACKING_STORE, entry.block_num*BLOCK_SIZE, SEEK_SET);
+		if (res < 0)
+			return res;
+
+		res = read(BACKING_STORE, targetpath, MAX_PATH_LEN);
+		if (res < 0)
+			return res;
+
+		dir_entry target_entry;
+		padded_dir_table target_table;
+		res = get_entry_and_table(&target_entry, &target_table, targetpath);
+		if (res < 0)
+			return res;
+
+		target_table.d.entries[res].num_links--;
+		res = update_table(&target_table);
+		if (res < 0)
+			return res;
+	}
+
+	/* Update free list and superblock. */
+	int temp = entry.block_num;
+	int count = 1;
+	while (fat[temp] != EOC) {
+		temp = fat[temp];
+		count++;
+	}
+	fat[temp] = superblock.free_list;
+	res = update_fat();
+	if (res < 0)
+		return res;
+
+	/* Update superblock. */
+	superblock.free_list = entry.block_num;
+	superblock.data_blocks_used -= count;
+	res = update_superblock();
+	if (res < 0)
+		return res;
+
+	/* Delete dir entry. */
+	int i;
+	for (i = entry_index; i < table.d.num_entries - 1; i++) {
+		table.d.entries[i] = table.d.entries[i+1];
+	}
+	table.d.num_entries--;
+	res = update_table(&table);
+
+	return res;
+}
 
 static void* jands_init(struct fuse_conn_info *conn)
 {
@@ -1110,7 +1193,7 @@ static struct fuse_operations jands_oper = {
 	.statfs     = jands_statfs,
 	.symlink  = jands_symlink,
 	.truncate   = jands_truncate,
-	//.unlink   = jands_unlink,
+	.unlink   = jands_unlink,
 	.write      = jands_write,
 	.init       = jands_init,
 };
